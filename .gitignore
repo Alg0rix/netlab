@@ -11,3 +11,4 @@ emu/shim/*.a
 emu/*.wat
 __pycache__/
 .DS_Store
+web/_test/

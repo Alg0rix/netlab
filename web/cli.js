@@ -406,11 +406,12 @@ export class SimShell {
     if (!j) return;
     if (j.left > 0 && tick >= j.next) {
       j.seq++; j.left--; j.sent++;
-      j.next = tick + 30;
+      j.next = tick + (this.app.realtime?.() ? 400 : 30);   // ~0.4 s apart in realtime
       if (!this.app.lab.ping(this.id, j.ip)) this.write(`icmp_seq=${j.seq} could not send\n`, 'err');
       else this.pings.push({ seq: j.seq, sent: tick });
     }
-    while (this.pings.length && tick - this.pings[0].sent > 200) {
+    const timeout = this.app.realtime?.() ? 2000 : 200;   // 2 s in realtime (real guests can be slow)
+    while (this.pings.length && tick - this.pings[0].sent > timeout) {
       const p = this.pings.shift();
       this.write(`Request timeout for icmp_seq ${p.seq}\n`, 'err');
     }

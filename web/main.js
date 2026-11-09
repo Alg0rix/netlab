@@ -1,9 +1,10 @@
 import init, { NetLab } from './pkg/netlab_wasm.js';
 import { IOSNode, iosArgs } from './ios.js';
+import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
 import { dissect, hexRows, toPcap, TICK_MS } from './capture.js';
 import { SimShell } from './cli.js';
-import { images, nvram, newUid, autosave, prefs, download, pickFile } from './store.js';
+import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile } from './store.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
 
@@ -20,12 +21,14 @@ const isTyping = e => e.target.closest?.('input, textarea, select, [contentedita
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 let lab = new NetLab();
-window.netlab = { get lab() { return lab; }, get view() { return { ...view }; }, get shapes() { return shapes; } };
+window.netlab = { get lab() { return lab; }, get view() { return { ...view }; }, get shapes() { return shapes; }, emus: null, meta: null };
 
 /* ════════════════════════════ state ════════════════════════════ */
 
 const meta = new Map();      // devId -> { tpl, image? }
-const ios = new Map();       // devId -> IOSNode
+window.netlab.meta = meta;
+const emus = new Map();      // devId -> IOSNode | VMNode (emulated nodes)
+window.netlab.emus = emus;
 let notes = [];              // { id, x, y, text }
 let shapes = [];             // { id, kind: rect|ellipse|line, x, y, w, h, stroke, fill, dash, width, text }
 let nextShapeId = 1;
@@ -102,7 +105,7 @@ const portCount = id => {
 function nodeState(id) {
   const d = byId.get(id);
   if (!d) return 'stopped';
-  if (d.kind === 'ext') return ios.get(id)?.state ?? 'stopped';
+  if (d.kind === 'ext') return emus.get(id)?.state ?? 'stopped';
   return d.powered ? 'running' : 'stopped';
 }
 
@@ -138,6 +141,7 @@ function serialize() {
     nodes: snap.devices.map(d => ({
       id: d.id, tpl: tplOf(d.id), name: d.name, x: Math.round(d.x), y: Math.round(d.y),
       powered: d.powered, image: meta.get(d.id)?.image ?? null, uid: meta.get(d.id)?.uid,
+      ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic } } : {}),
       ports: d.ports.map(p => (p.ip ? { ip: p.ip, mask: p.mask } : null)),
       routes: d.routes,
     })),
@@ -148,8 +152,8 @@ function serialize() {
 }
 
 function restore(data) {
-  for (const n of ios.values()) n.stop();   // async: grabs a last NVRAM snapshot first
-  ios.clear();
+  for (const n of emus.values()) n.stop();   // async: grabs a last NVRAM snapshot first
+  emus.clear();
   meta.clear();
   for (const id of [...consoles.keys()]) closeConsole(id, true);
   caps.clear(); capLink = capPkt = null;
@@ -158,6 +162,7 @@ function restore(data) {
   cable = null;
   try { lab.free(); } catch { /* already freed */ }
   lab = new NetLab();
+  simTick = 0;
 
   labName = data?.name || 'Untitled lab';
   const idmap = new Map();
@@ -167,7 +172,7 @@ function restore(data) {
     const t = tpl(n.tpl) ?? tpl('pc');
     const id = lab.add_device(t.kind, n.name, n.x, n.y);
     idmap.set(n.id, id);
-    registerNode(id, t.id, n.name, n.image, n.uid);
+    registerNode(id, t.id, n.name, n.image, n.uid, n.vm);
     (n.ports ?? []).forEach((p, i) => p && lab.set_ip(id, i, p.ip, p.mask));
     for (const r of n.routes ?? []) lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
@@ -201,9 +206,34 @@ function dirty() {
 
 /* ════════════════════════════ node lifecycle ════════════════════════════ */
 
-function registerNode(id, tplId, name, image = null, uid = null) {
+const isVM = id => tpl(tplOf(id))?.emu === 'v86';
+const isIOS = id => tplOf(id) === 'ios';
+
+function registerNode(id, tplId, name, image = null, uid = null, vm = null) {
   const m = { tpl: tplId, image, uid: uid || newUid(), nvSaved: null };
   meta.set(id, m);
+  if (tpl(tplId)?.emu === 'v86') {
+    Object.assign(m, VM_DEFAULTS[tplId] ?? VM_DEFAULTS.x86, vm ?? {}, { diskSaved: null, diskSize: 0 });
+    const node = new VMNode(id, name);
+    node.onLog = msg => vmConsoleOf(id).log(msg);
+    node.onSerial = bytes => vmConsoleOf(id).serial(bytes);
+    node.onFrame = (dev, port, bytes) => lab.ext_inject(dev, port, bytes);
+    // guest disk → IndexedDB (debounced after writes, and on stop)
+    node.onDisk = buf => disks.put(m.uid, buf).then(rec => {
+      m.diskSaved = rec.saved; m.diskSize = rec.size;
+      autosave.save(serialize());
+      renderInspectorSoon();
+    }).catch(e => toast(e?.name === 'QuotaExceededError'
+      ? `${byId.get(id)?.name}: browser storage is full — the VM disk could not be saved`
+      : `${byId.get(id)?.name}: could not save the VM disk (${e?.message ?? e})`, 'err'));
+    node.onState = st => {
+      renderTopo(); renderInspectorSoon(); renderDockTabs();
+      consoles.get(id)?.onState?.(st);
+      pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${byId.get(id)?.name ?? name}: ${st === 'running' ? 'VM started' : st}` });
+    };
+    disks.info(m.uid).then(r => { if (r) { m.diskSaved = r.saved; m.diskSize = r.size; renderInspectorSoon(); } });
+    emus.set(id, node);
+  }
   if (tplId === 'ios') {
     const node = new IOSNode(id, name);
     // IOS `write memory` → NVRAM snapshot from the worker → IndexedDB
@@ -226,7 +256,7 @@ function registerNode(id, tplId, name, image = null, uid = null) {
       consoles.get(id)?.onState?.(st);
       pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${byId.get(id)?.name ?? name}: ${st === 'running' ? 'Dynamips started' : st}` });
     };
-    ios.set(id, node);
+    emus.set(id, node);
   }
 }
 
@@ -249,9 +279,10 @@ function deleteSelection() {
   for (const id of sel.nodes) {
     for (const l of snap.links) if (l.a === id || l.b === id) caps.delete(l.id);
     lab.remove_device(id);
-    ios.get(id)?.kill();
-    if (meta.get(id)?.tpl === 'ios') nvram.remove(meta.get(id).uid);
-    ios.delete(id);
+    emus.get(id)?.kill();
+    if (isIOS(id)) nvram.remove(meta.get(id).uid);
+    if (isVM(id)) disks.remove(meta.get(id).uid);
+    emus.delete(id);
     meta.delete(id);
     closeConsole(id, true);
   }
@@ -282,7 +313,8 @@ async function startNode(id) {
   const d = byId.get(id);
   if (!d) return;
   if (d.kind !== 'ext') { lab.set_power(id, true); refresh(); renderAll(); dirty(); return; }
-  const node = ios.get(id);
+  if (isVM(id)) return startVM(id);
+  const node = emus.get(id);
   if (!crossOriginIsolated) return toast('IOS needs cross-origin isolation (serve with COOP/COEP — make serve)', 'err');
   if (node.state !== 'stopped') return;
   let name = meta.get(id).image;
@@ -299,10 +331,43 @@ async function startNode(id) {
   pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${name} (${(rec.size / 1e6).toFixed(1)} MB)` });
 }
 
+async function startVM(id) {
+  const d = byId.get(id), m = meta.get(id), node = emus.get(id);
+  if (node.state !== 'stopped') return;
+  let name = m.image;
+  const saved = await disks.get(m.uid);
+  // an installed VM boots from its own disk; the image is only needed the first time
+  if (!saved && (!name || !(await images.get(name)))) {
+    name = await chooseImage(id);
+    if (!name) return;
+  }
+  const rec = name ? await images.get(name) : null;
+  let disk, media = null;
+  if (saved) {
+    disk = saved.data;
+    if (rec?.kind === 'iso') media = rec.data;          // keep the CD in the drive; disk boots first
+  } else if (rec.kind === 'disk') {
+    disk = rec.data;                                    // fresh private copy of the user's raw disk
+  } else {
+    disk = new ArrayBuffer(m.diskMB * 1024 * 1024);     // blank disk to install onto
+    media = rec.data;
+  }
+  persistStorage();
+  node.name = d.name;
+  const c = vmConsoleOf(id);
+  // an installed (bootable) disk talks on the serial console; installers draw on the VGA screen
+  const mbr = new Uint8Array(disk, 510, 2);
+  c.setView(mbr[0] === 0x55 && mbr[1] === 0xaa ? 'serial' : 'screen');
+  openConsole(id);
+  pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${saved ? 'its saved disk' : name}` });
+  await node.boot({ media, disk, ram: m.ram, nic: m.nic });
+  if (!saved) node.saveDisk();                          // the uid now has a disk; installs persist from here
+}
+
 function stopNode(id) {
   const d = byId.get(id);
   if (!d) return;
-  if (d.kind === 'ext') ios.get(id)?.stop();
+  if (d.kind === 'ext') emus.get(id)?.stop();
   else { lab.set_power(id, false); refresh(); }
   renderAll();
   dirty();
@@ -316,14 +381,14 @@ function reloadNode(id) {
   toast(`${d.name} reloaded — ARP/MAC tables cleared`);
 }
 
-const startAll = () => snap.devices.forEach(d => nodeState(d.id) === 'stopped' && (d.kind !== 'ext' || meta.get(d.id)?.image) && startNode(d.id));
+const startAll = () => snap.devices.forEach(d => nodeState(d.id) === 'stopped' && (d.kind !== 'ext' || meta.get(d.id)?.image || meta.get(d.id)?.diskSaved) && startNode(d.id));
 const stopAll = () => snap.devices.forEach(d => stopNode(d.id));
 
 function rename(id, name) {
   name = name.trim();
   if (!name) return;
   lab.rename_device(id, name);
-  const n = ios.get(id); if (n) n.name = name;
+  const n = emus.get(id); if (n) n.name = name;
   refresh();
   renderAll();
   dirty();
@@ -383,34 +448,60 @@ function pushEvent(ev) {
   evDirty = true;
 }
 
-function tick() {
-  lab.tick();
-  for (const { dev, port, bytes } of lab.drain_ext()) ios.get(dev)?.tx(port, bytes);
-  for (const c of lab.drain_captures()) {
-    const s = caps.get(c.link);
-    if (s && !s.paused) {
-      s.packets.push({ n: ++capSeq, tick: c.tick, from: c.from, bytes: c.bytes, d: dissect(c.bytes) });
-      if (s.packets.length > 10000) s.packets.splice(0, 2000);
-      capDirty = true;
-    }
-  }
-  refresh();
-  for (const ev of JSON.parse(lab.drain_events())) pushEvent(ev);
-  for (const c of consoles.values()) c.shell?.onTick(snap.tick);
-}
+// Fabric clock. Realtime runs ~1 tick per millisecond on its own timer so real
+// guests (IOS, RouterOS) see LAN-like latency and keep working when the tab is
+// hidden (requestAnimationFrame stops there). Simulation keeps the slow,
+// animated pace driven by play/step.
+const RT_TICKS_PER_MS = 1;
+const MAX_TICKS_PER_PUMP = 2000;
+let simTick = 0;
 
-let evDirty = false, capDirty = false, lastT = performance.now(), slowT = 0;
-function frame(now) {
-  const dt = Math.min(250, now - lastT);
-  lastT = now;
-  const running = mode === 'realtime' || playing;
-  if (running) {
+/** advance the fabric n ticks; snapshot/events are collected once afterwards */
+function runTicks(n) {
+  if (n <= 0) return;
+  for (let i = 0; i < n; i++) {
+    lab.tick();
+    simTick++;
+    for (const { dev, port, bytes } of lab.drain_ext()) emus.get(dev)?.tx(port, bytes);
+    for (const c of lab.drain_captures()) {
+      const s = caps.get(c.link);
+      if (s && !s.paused) {
+        s.packets.push({ n: ++capSeq, tick: c.tick, from: c.from, bytes: c.bytes, d: dissect(c.bytes) });
+        if (s.packets.length > 10000) s.packets.splice(0, 2000);
+        capDirty = true;
+      }
+    }
+    for (const c of consoles.values()) c.shell?.onTick(simTick);
+  }
+  for (const ev of JSON.parse(lab.drain_events())) pushEvent(ev);
+  snapDirty = true;
+}
+const tick = () => { runTicks(1); refresh(); snapDirty = false; };
+
+let snapDirty = false, lastPump = performance.now();
+function pump() {
+  const now = performance.now();
+  const dt = Math.min(1000, now - lastPump);
+  lastPump = now;
+  if (mode === 'realtime') {
+    runTicks(Math.min(MAX_TICKS_PER_PUMP, Math.round(dt * RT_TICKS_PER_MS * speed)));
+    tickFrac = 0;
+  } else if (playing) {
     tickAcc += dt * speed;
     let n = 0;
-    while (tickAcc >= WALL_TICK && n++ < 8) { tickAcc -= WALL_TICK; tick(); }
+    while (tickAcc >= WALL_TICK && n < 8) { tickAcc -= WALL_TICK; n++; }
     if (n >= 8) tickAcc = 0;
-  }
-  tickFrac = running ? tickAcc / WALL_TICK : 0;
+    runTicks(n);
+    tickFrac = tickAcc / WALL_TICK;
+  } else tickFrac = 0;
+  // the canvas only needs a fresh snapshot about once a frame
+  if (snapDirty && (mode !== 'realtime' || now - lastSnap > 15)) { refresh(); snapDirty = false; lastSnap = now; }
+}
+let lastSnap = 0;
+setInterval(pump, 4);
+
+let evDirty = false, capDirty = false, slowT = 0;
+function frame(now) {
   draw(now);
   if (P.minimap) drawMinimap();
   if (now - slowT > 200) {
@@ -1228,7 +1319,7 @@ function contextMenu(hit, x, y, w) {
       ...(isExt ? [] : [{ label: 'Reload', icon: 'reload', run: () => reloadNode(d.id), disabled: st !== 'running' }]),
       { label: 'Console', icon: 'term', kbd: 'dbl-click', run: () => openConsole(d.id) },
       '-',
-      ...(isExt ? [{ label: 'Choose IOS image…', icon: 'image', run: () => chooseImage(d.id) }] : []),
+      ...(isExt ? [{ label: 'Choose image…', icon: 'image', run: () => chooseImage(d.id) }] : []),
       { label: 'Rename', icon: 'tag', kbd: 'F2', run: () => focusRename() },
       { label: 'Duplicate', icon: 'plus', kbd: 'Ctrl+D', run: duplicateSelection },
       { label: 'Capture on all links', icon: 'capture', run: () => snap.links.filter(l => l.a === d.id || l.b === d.id).forEach(l => setCapture(l.id, true)), disabled: !d.ports.some(p => p.link != null) },
@@ -1324,7 +1415,7 @@ const MENUS = {
     { label: 'Realtime mode', run: () => setMode('realtime'), sub: mode === 'realtime' ? '●' : '' },
     { label: 'Simulation mode', run: () => setMode('sim'), sub: mode === 'sim' ? '●' : '' },
     '-',
-    { label: 'Router images…', icon: 'image', run: () => imageManager() },
+    { label: 'Images…', icon: 'image', run: () => imageManager() },
     { label: 'Clear event log', icon: 'trash', run: () => { events.length = 0; renderEvents(); renderDockTabs(); } },
   ],
   Help: () => [
@@ -1399,41 +1490,58 @@ function modal(title, body, foot = '') {
   return m;
 }
 
+const KIND_LABEL = { ios: 'IOS', iso: 'ISO', disk: 'Disk' };
 function imageManager(forDev = null) {
   return new Promise(resolve => {
+    const want = forDev == null ? null : isVM(forDev) ? ['iso', 'disk'] : ['ios'];
+    const isRos = forDev != null && tplOf(forDev) === 'routeros';
+    const help = want == null
+      ? 'Cisco 7200 IOS images (<span class="mono">.bin</span>), x86 install ISOs and raw disk images (<span class="mono">.iso</span>, <span class="mono">.img</span>).'
+      : want[0] === 'ios'
+        ? 'Use a Cisco 7200 IOS image you are licensed to run, e.g. <span class="mono">c7200-adventerprisek9-mz.152-4.S5.bin</span>.'
+        : isRos
+          ? 'Use the <b>RouterOS v6 x86</b> install ISO (e.g. <span class="mono">mikrotik-6.49.18.iso</span> from mikrotik.com) or a raw disk with v6 installed. CHR and RouterOS v7 are 64-bit and cannot run in this 32-bit emulator.'
+          : 'Any 32-bit x86 install ISO or raw disk image. Convert qcow2/VMDK/VDI first: <span class="mono">qemu-img convert -O raw in.qcow2 out.img</span>.';
+    const accept = want == null ? '.bin,.image,.iso,.img,.raw' : want[0] === 'ios' ? '.bin,.image' : '.iso,.img,.raw';
     const body = h(`<div>
-      <div class="callout">${ico('info')}<div>Images stay in this browser (IndexedDB) and are never uploaded anywhere.
-        Use a Cisco 7200 IOS image you are licensed to run, e.g. <span class="mono">c7200-adventerprisek9-mz.152-4.S5.bin</span>.</div></div>
+      <div class="callout">${ico('info')}<div>Images stay in this browser (IndexedDB) and are never uploaded anywhere. ${help}</div></div>
       <ul class="imglist" hidden></ul>
-      <div class="drop-zone" tabindex="0">${ico('upload')}<div><b>Drop an image here</b> or click to browse</div><div class="muted">.bin / .image</div></div>
+      <div class="drop-zone" tabindex="0">${ico('upload')}<div><b>Drop an image here</b> or click to browse</div><div class="muted">${esc(accept.replaceAll(',', ' '))}</div></div>
     </div>`);
-    const m = modal(forDev ? `Choose an IOS image for ${byId.get(forDev)?.name}` : 'Router images', body);
+    const m = modal(forDev != null ? `Choose an image for ${byId.get(forDev)?.name}` : 'Images', body);
     let chosen = null;
     m._onclose = () => resolve(chosen);
     const list = $('.imglist', body);
+    const use = name => { meta.get(forDev).image = name; chosen = name; dirty(); renderInspector(true); m.close(); };
     const draw = async () => {
-      const all = await images.list();
+      const all = (await images.list()).filter(im => !want || want.includes(im.kind));
       list.hidden = !all.length;
       list.innerHTML = '';
       for (const im of all) {
-        const li = h(`<li><span class="nm" title="${esc(im.name)}">${esc(im.name)}</span><span class="muted mono">${(im.size / 1e6).toFixed(1)} MB</span>
-          <span class="row">${forDev ? '<button class="btn sm primary" data-use>Use</button>' : ''}<button class="icon-btn sm" data-del title="Delete">${UI.trash}</button></span></li>`);
+        const li = h(`<li><span class="nm" title="${esc(im.name)}"><span class="pill" style="margin-right:8px">${KIND_LABEL[im.kind] ?? im.kind}</span>${esc(im.name)}</span><span class="muted mono">${(im.size / 1e6).toFixed(1)} MB</span>
+          <span class="row">${forDev != null ? '<button class="btn sm primary" data-use>Use</button>' : ''}<button class="icon-btn sm" data-del title="Delete">${UI.trash}</button></span></li>`);
         $('[data-del]', li).onclick = async () => { await images.remove(im.name); draw(); };
-        const use = $('[data-use]', li);
-        if (use) use.onclick = () => { meta.get(forDev).image = im.name; chosen = im.name; dirty(); renderInspector(true); m.close(); };
+        const u = $('[data-use]', li);
+        if (u) u.onclick = () => use(im.name);
         list.append(li);
       }
     };
     const add = async f => {
       if (!f) return;
-      if (f.size < 1e6) toast(`${f.name} is tiny for an IOS image — continuing anyway`);
-      await images.put(f);
-      toast(`Stored ${f.name}`, 'ok');
-      if (forDev) { meta.get(forDev).image = f.name; chosen = f.name; dirty(); renderInspector(true); m.close(); return; }
+      const s = await sniffImage(f);
+      if (s.error) return toast(s.error, 'err');
+      if (want && !want.includes(s.kind)) {
+        return toast(want[0] === 'ios' ? `${f.name} is not a Cisco IOS image (expected an ELF .bin)` : `${f.name} is a Cisco IOS image — add it to a Cisco 7200 node instead`, 'err');
+      }
+      if (s.warn) toast(s.warn, 'err');
+      try { await images.put(f, s.kind); }
+      catch (e) { return toast(e?.name === 'QuotaExceededError' ? 'Browser storage is full — delete unused images first' : `Could not store ${f.name}: ${e?.message ?? e}`, 'err'); }
+      toast(`Stored ${f.name} (${KIND_LABEL[s.kind]})`, 'ok');
+      if (forDev != null) return use(f.name);
       draw();
     };
     const dz = $('.drop-zone', body);
-    dz.onclick = async () => add(await pickFile('.bin,.image'));
+    dz.onclick = async () => add(await pickFile(accept));
     dz.onkeydown = e => { if (e.key === 'Enter') dz.click(); };
     dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
     dz.ondragleave = () => dz.classList.remove('over');
@@ -1570,7 +1678,8 @@ function nodeInspector(id) {
     console: () => openConsole(id), delete: () => { selectOnly('node', id); deleteSelection(); },
   })[b.dataset.a]());
 
-  if (isExt) {
+  if (isVM(id)) root.append(vmSettings(id, d, st));
+  if (isExt && !isVM(id)) {
     const img = meta.get(id).image;
     const s = h(`<div class="sect"><h4>Image</h4>
       <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img ? esc(img) : '<span class="muted">none selected</span>'}</span>
@@ -1602,7 +1711,7 @@ function nodeInspector(id) {
   // interfaces
   const n = portCount(id);
   const ifs = h(`<div class="sect"><h4>Interfaces</h4><table class="iftable"><thead><tr><th>Name</th><th>${isSw ? 'Connected to' : 'IPv4 / prefix'}</th>${isSw ? '' : '<th>Peer</th>'}</tr></thead><tbody></tbody></table>
-    ${isExt ? '<p class="muted" style="margin:8px 0 0">Addresses on IOS interfaces are configured from the IOS console.</p>' : ''}</div>`);
+    ${isExt ? `<p class="muted" style="margin:8px 0 0">Addresses are configured inside the ${isVM(id) ? 'guest (console)' : 'IOS console'}.${isVM(id) ? ' The emulator provides one network interface per VM.' : ''}</p>` : ''}</div>`);
   const tb = $('tbody', ifs);
   for (let i = 0; i < n; i++) {
     const p = d.ports[i];
@@ -1612,7 +1721,7 @@ function nodeInspector(id) {
     const dotc = !l ? 'idle' : l.up ? 'running' : 'stopped';
     const tr = h(`<tr><td class="ifn"><span class="dot ${dotc}"></span>${esc(ifName(id, i))}</td>
       ${isSw ? `<td class="peer" style="max-width:none">${esc(peerTxt)}</td>` :
-        isExt ? `<td class="mono" style="color:var(--muted)">via IOS</td><td class="peer" title="${esc(peerTxt)}">${esc(peerTxt)}</td>` :
+        isExt ? `<td class="mono" style="color:var(--muted)">${isVM(id) ? 'in guest' : 'via IOS'}</td><td class="peer" title="${esc(peerTxt)}">${esc(peerTxt)}</td>` :
         `<td><input class="field" value="${p.ip ? `${p.ip}/${maskLen(p.mask)}` : ''}" placeholder="unassigned" spellcheck="false" /></td><td class="peer" title="${esc(peerTxt)}">${esc(peerTxt)}</td>`}</tr>`);
     const inp = $('input', tr);
     if (inp) {
@@ -1696,6 +1805,49 @@ function nodeInspector(id) {
       ${rows.length ? `<table class="tbl-mini">${rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join('')}</table>` : '<div class="empty-note">Empty — send some traffic.</div>'}</div>`);
     root.append(s);
   }
+  return root;
+}
+
+function vmSettings(id, d, st) {
+  const m = meta.get(id), running = st !== 'stopped';
+  const ros = tplOf(id) === 'routeros';
+  const when = m.diskSaved ? new Date(m.diskSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
+  const root = h(`<div>
+    <div class="sect"><h4>Image</h4>
+      <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.image ? esc(m.image) : '<span class="muted">none selected</span>'}</span>
+      <button class="btn sm" data-img>${ico('image')}${m.image ? 'Change' : 'Choose'}</button></div>
+      ${ros ? `<p class="muted" style="margin:8px 0 0;font-size:12px">First start boots the RouterOS v6 x86 ISO on the <b>Screen</b> tab: press <span class="mono">a</span> then <span class="mono">i</span>, answer <span class="mono">n</span>, <span class="mono">y</span>, then Enter to reboot into the installed system. Login <span class="mono">admin</span>, empty password. The Serial tab is the router console after that.</p>` : ''}
+    </div>
+    <div class="sect"><h4>Hardware</h4>
+      <div class="kv">
+        <dt>RAM</dt><dd><select class="field" data-ram ${running ? 'disabled' : ''}>${[64, 128, 256, 512, 1024].map(v => `<option value="${v}" ${v === m.ram ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
+        <dt>New disk</dt><dd><select class="field" data-disk ${running || m.diskSaved ? 'disabled' : ''}>${[64, 128, 256, 512, 1024].map(v => `<option value="${v}" ${v === m.diskMB ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
+        <dt>NIC model</dt><dd><select class="field" data-nic ${running ? 'disabled' : ''}>
+          <option value="ne2k" ${m.nic === 'ne2k' ? 'selected' : ''}>NE2000 (works with RouterOS v6)</option>
+          <option value="virtio" ${m.nic === 'virtio' ? 'selected' : ''}>virtio-net (modern Linux)</option></select></dd>
+      </div>
+      ${running ? '<p class="muted" style="margin:8px 0 0;font-size:12px">Stop the VM to change hardware.</p>' : ''}
+    </div>
+    <div class="sect"><h4>Disk</h4>
+      <p style="margin:0 0 8px">${when
+        ? `<span class="pill ok"><span class="dot running"></span>Saved in this browser</span> <span class="muted" style="font-size:12px">${(m.diskSize / 1048576).toFixed(0)} MB · ${esc(when)}</span>`
+        : '<span class="muted">No disk yet — created on first start.</span>'}</p>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">Changes are saved a few seconds after the guest writes, and on Stop. VM disks are not included in lab files.</p>
+      ${when ? `<button class="btn sm danger" data-reset ${running ? 'disabled title="Stop the VM first"' : ''}>${ico('trash')}Reset disk</button>` : ''}
+    </div></div>`);
+  $('[data-img]', root).onclick = () => chooseImage(id);
+  const set = (k, v) => { m[k] = v; dirty(); };
+  $('[data-ram]', root).onchange = e => set('ram', +e.target.value);
+  $('[data-disk]', root).onchange = e => set('diskMB', +e.target.value);
+  $('[data-nic]', root).onchange = e => set('nic', e.target.value);
+  const rs = $('[data-reset]', root);
+  if (rs) rs.onclick = async () => {
+    if (!(await confirmBox('Reset disk', `Delete the disk of ${d.name}? Everything installed or configured inside the VM is lost; it starts from the image again.`, 'Reset', true))) return;
+    await disks.remove(m.uid);
+    m.diskSaved = null; m.diskSize = 0;
+    toast(`${d.name}: disk reset`, 'ok');
+    renderInspector(true);
+  };
   return root;
 }
 
@@ -2061,7 +2213,7 @@ function hl(range) {
 function openConsole(id) {
   const d = byId.get(id);
   if (!d) return;
-  if (!consoles.has(id)) consoles.set(id, d.kind === 'ext' ? iosConsole(id) : simConsole(id));
+  if (!consoles.has(id)) consoles.set(id, isVM(id) ? vmConsole(id) : d.kind === 'ext' ? iosConsole(id) : simConsole(id));
   showDock('con:' + id);
 }
 function closeConsole(id, silent) {
@@ -2093,6 +2245,7 @@ function simConsole(id) {
   const app = {
     get lab() { return lab; },
     dev: i => byId.get(i), snap: () => snap, ifName, refresh: () => { refresh(); renderInspector(true); dirty(); },
+    realtime: () => mode === 'realtime',
     rename: (i, n) => rename(i, n),
   };
   const shell = new SimShell(app, id, t.write);
@@ -2125,6 +2278,86 @@ function simConsole(id) {
     shell, el: t.el,
     focus: () => { setPrompt(); t.input.focus(); },
     scroll: () => { t.out.scrollTop = t.out.scrollHeight; },
+  };
+}
+
+/* ── VM console: Serial (xterm.js) + Screen (VGA) ── */
+let xtermP = null;
+function loadXterm() {
+  const add = (tag, attrs) => new Promise((res, fail) => { const e = document.createElement(tag); Object.assign(e, attrs); e.onload = res; e.onerror = fail; document.head.append(e); });
+  return xtermP ??= Promise.all([
+    add('link', { rel: 'stylesheet', href: 'vendor/xterm/xterm.css' }),
+    add('script', { src: 'vendor/xterm/xterm.js' }).then(() => add('script', { src: 'vendor/xterm/addon-fit.js' })),
+  ]);
+}
+function vmConsoleOf(id) {
+  if (!consoles.has(id)) consoles.set(id, vmConsole(id));
+  return consoles.get(id);
+}
+function vmConsole(id) {
+  const node = emus.get(id);
+  const el = h(`<div class="pane"><div class="term vm-term">
+    <div class="term-bar">
+      <div class="seg sm vm-views"><button data-v="serial">Serial</button><button data-v="screen">Screen</button></div>
+      <span class="vm-title"></span><span class="spacer"></span><span data-ctl></span>
+    </div>
+    <div class="vm-body"><div class="vm-serial"></div><div class="vm-screen"></div></div></div></div>`);
+  const serialEl = $('.vm-serial', el), screenEl = $('.vm-screen', el);
+  screenEl.append(node.screen.el);
+  let view = 'serial', term = null, fit = null, pending = '';
+  const dec = new TextDecoder();
+  const ensureTerm = async () => {
+    if (term || !serialEl.isConnected) return;
+    await loadXterm();
+    if (term) return;
+    term = new window.Terminal({
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--mono'), fontSize: 13, lineHeight: 1.15,
+      cursorBlink: true, scrollback: 5000, convertEol: false,
+      theme: { background: '#07090d', foreground: '#d7dde8', cursor: '#6fb3ff', selectionBackground: '#2a3a55' },
+    });
+    fit = new window.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(serialEl);
+    const doFit = () => { try { if (serialEl.offsetWidth) fit.fit(); } catch { /* hidden */ } };
+    doFit();
+    new ResizeObserver(doFit).observe(serialEl);
+    term.onData(d => emus.get(id)?.sendSerial(new TextEncoder().encode(d)));
+    if (pending) { term.write(pending); pending = ''; }
+    if (view === 'serial') term.focus();
+  };
+  const write = str => { if (term) term.write(str); else pending = (pending + str).slice(-200000); };
+  const renderBar = () => {
+    const st = nodeState(id);
+    $('.vm-title', el).textContent = `${byId.get(id)?.name ?? ''} · ${tpl(tplOf(id)).label}`;
+    const ctl = $('[data-ctl]', el);
+    ctl.innerHTML = st === 'stopped' ? `<button class="btn sm" data-s>${ico('play')}Start</button>` : `<button class="btn sm" data-x>${ico('stop')}Stop</button>`;
+    $('[data-s]', ctl)?.addEventListener('click', () => startNode(id));
+    $('[data-x]', ctl)?.addEventListener('click', () => stopNode(id));
+    hydrateIcons(ctl);
+  };
+  const setView = v => {
+    view = v;
+    $$('.vm-views button', el).forEach(b => b.classList.toggle('on', b.dataset.v === v));
+    serialEl.hidden = v !== 'serial';
+    screenEl.hidden = v !== 'screen';
+    if (v === 'serial') ensureTerm().then(() => term?.focus());
+    else node.screen.el.focus();
+  };
+  $$('.vm-views button', el).forEach(b => b.onclick = () => setView(b.dataset.v));
+  // keys typed on the VGA screen go to the guest's PS/2 keyboard and nowhere else
+  node.screen.el.addEventListener('keydown', e => { if (node.screenKey(e)) { e.preventDefault(); e.stopPropagation(); } });
+  node.screen.el.addEventListener('mousedown', () => node.screen.el.focus());
+  renderBar();
+  setView('serial');
+  write(`\x1b[2m${byId.get(id)?.name}: ${nodeState(id) === 'stopped' ? 'stopped, press Start' : 'serial console'}\x1b[0m\r\n`);
+  return {
+    el,
+    serial: bytes => write(dec.decode(bytes, { stream: true })),
+    log: msg => write(`\x1b[2m[netlab] ${msg}\x1b[0m\r\n`),
+    setView,
+    onState: st => { renderBar(); if (st === 'stopped') write('\r\n\x1b[2m[VM stopped]\x1b[0m\r\n'); },
+    focus: () => setView(view),
+    scroll: () => {},
   };
 }
 
@@ -2195,7 +2428,7 @@ function iosConsole(id) {
     scroll: () => { t.out.scrollTop = t.out.scrollHeight; },
   };
   t.out.addEventListener('keydown', e => {
-    const n = ios.get(id);
+    const n = emus.get(id);
     if (!n) return;
     let b = null;
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) b = new TextEncoder().encode(e.key);
@@ -2208,7 +2441,7 @@ function iosConsole(id) {
     else if (e.key === 'ArrowDown') b = new Uint8Array([14]); // Ctrl-N
     if (b) { n.sendKeys(b); e.preventDefault(); }
   });
-  t.out.addEventListener('paste', e => { ios.get(id)?.sendKeys(new TextEncoder().encode(e.clipboardData.getData('text').replace(/\n/g, '\r'))); e.preventDefault(); });
+  t.out.addEventListener('paste', e => { emus.get(id)?.sendKeys(new TextEncoder().encode(e.clipboardData.getData('text').replace(/\n/g, '\r'))); e.preventDefault(); });
   return c;
 }
 function consoleWrite(id, bytes) {
@@ -2349,6 +2582,8 @@ function DEMO() {
 
 /* ════════════════════════════ start ════════════════════════════ */
 
+// best effort: flush running VM disks when the tab goes away (normally they save ~8 s after writes)
+addEventListener('pagehide', () => { for (const n of emus.values()) if (n.saveDisk && n.state === 'running') n.saveDisk(); });
 addEventListener('netlab-storage-blocked', () => toast('Close other netlab tabs — browser storage is locked by an older version. Images and configs are kept in memory until reload.', 'err'));
 applyPrefs();
 const sp = prefs.get('speed', 2);

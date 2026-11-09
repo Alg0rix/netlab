@@ -63,6 +63,7 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
         ttl: 1,
         payload: Payload::Raw { ethertype: etype },
         raw: Some(raw.to_vec()),
+        icmp_echo: None,
     };
     match etype {
         0x0806 => {
@@ -95,12 +96,16 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
             f.src_ip = [body[12], body[13], body[14], body[15]];
             f.dst_ip = [body[16], body[17], body[18], body[19]];
             if proto == 1 && body.len() >= ihl + 4 {
-                let icmp = &body[ihl..];
+                let total = (u16be(body, 2) as usize).clamp(ihl, body.len());
+                let icmp = &body[ihl..total];
                 f.payload = match icmp[0] {
                     8 => Payload::IcmpEchoRequest,
                     0 => Payload::IcmpEchoReply,
                     _ => f.payload,
                 };
+                if matches!(f.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply) && icmp.len() >= 8 {
+                    f.icmp_echo = Some(icmp[4..].to_vec());
+                }
             }
         }
         _ => {}
@@ -112,7 +117,25 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
 /// wire bytes pass through unchanged.
 pub fn encode(f: &Frame) -> Option<Vec<u8>> {
     if let Some(raw) = &f.raw {
-        return Some(raw.clone());
+        // Original bytes, but with this hop's MACs and TTL (a router may have
+        // forwarded it); payload and ids stay untouched.
+        let mut out = raw.clone();
+        if out.len() >= 14 {
+            out[0..6].copy_from_slice(&mac_bytes(f.dst_mac));
+            out[6..12].copy_from_slice(&mac_bytes(f.src_mac));
+            if u16be(&out, 12) == 0x0800 && out.len() >= 34 && out[14] >> 4 == 4 {
+                let ihl = ((out[14] & 0x0F) as usize) * 4;
+                if out.len() >= 14 + ihl && out[22] != f.ttl {
+                    out[22] = f.ttl;
+                    out[24] = 0;
+                    out[25] = 0;
+                    let c = cksum(&out[14..14 + ihl]);
+                    out[24] = (c >> 8) as u8;
+                    out[25] = c as u8;
+                }
+            }
+        }
+        return Some(out);
     }
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&mac_bytes(f.dst_mac));
@@ -142,7 +165,8 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
             out.extend_from_slice(&0x0800u16.to_be_bytes());
             // ICMP: type code cksum id seq
             let ty: u8 = if matches!(f.payload, Payload::IcmpEchoRequest) { 8 } else { 0 };
-            let mut icmp = vec![ty, 0, 0, 0, 0, 0, 0, 1];
+            let mut icmp = vec![ty, 0, 0, 0];
+            icmp.extend_from_slice(f.icmp_echo.as_deref().unwrap_or(&[0, 0, 0, 1]));
             let c = cksum(&icmp);
             icmp[2] = (c >> 8) as u8;
             icmp[3] = c as u8;

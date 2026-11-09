@@ -314,6 +314,7 @@ impl Topology {
             ttl: 64,
             payload: Payload::IcmpEchoRequest,
                 raw: None,
+                icmp_echo: None,
         };
         d.emit_ip(frame, self.tick, &mut self.events);
         true

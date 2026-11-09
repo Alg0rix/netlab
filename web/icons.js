@@ -30,8 +30,18 @@ const SVG = {
   router: cyl('rt', '#5aa9ff', '#2f7de1', '#1b4f99', routerArrows),
   ios: cyl('io', '#3fd3c4', '#119f94', '#0a5e58', routerArrows + `
     <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">IOS</text>`),
-  chr: cyl('mk', '#b495ff', '#7a55e0', '#45308a', routerArrows + `
-    <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">CHR</text>`),
+  routeros: cyl('mk', '#b495ff', '#7a55e0', '#45308a', routerArrows + `
+    <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">ROS</text>`),
+  x86: `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs><linearGradient id="vmg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb86b"/><stop offset="1" stop-color="#e07a2e"/></linearGradient></defs>
+  <rect x="8" y="12" width="48" height="36" rx="5" fill="#2b3442"/>
+  <rect x="11" y="15" width="42" height="30" rx="3" fill="#161c26"/>
+  <rect x="20" y="20" width="24" height="20" rx="2.5" fill="url(#vmg)"/>
+  ${[0, 1, 2, 3].map(i => `<rect x="${23 + i * 5.5}" y="16.5" width="2" height="4" fill="#ffb86b"/><rect x="${23 + i * 5.5}" y="39.5" width="2" height="4" fill="#ffb86b"/>`).join('')}
+  <text x="32" y="33.5" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" font-weight="700" fill="#1b1206">x86</text>
+  <rect x="22" y="48" width="20" height="4" rx="2" fill="#4a566a"/>
+</svg>`,
   switch: `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
@@ -83,8 +93,9 @@ export const TEMPLATES = [
   { id: 'server', kind: 'host', label: 'Server', sub: 'End host, one NIC', group: 'End devices', prefix: 'Server', ports: 1 },
   { id: 'switch', kind: 'switch', label: 'Ethernet switch', sub: '8-port L2, MAC learning', group: 'Switching', prefix: 'SW', ports: 8 },
   { id: 'router', kind: 'router', label: 'Router', sub: '4-port L3, static routes', group: 'Routing', prefix: 'R', ports: 4 },
-  { id: 'ios', kind: 'ext', label: 'Cisco 7200', sub: 'Real IOS via Dynamips', group: 'Emulated', prefix: 'IOS', ports: 4, badge: 'QEMU-free' },
-  { id: 'chr', kind: null, label: 'MikroTik CHR', sub: 'RouterOS via v86 — planned', group: 'Emulated', prefix: 'CHR', disabled: true },
+  { id: 'ios', kind: 'ext', emu: 'dynamips', label: 'Cisco 7200', sub: 'Real IOS · your image', group: 'Emulated', prefix: 'IOS', ports: 4 },
+  { id: 'routeros', kind: 'ext', emu: 'v86', label: 'MikroTik RouterOS', sub: 'RouterOS v6 x86 · your image', group: 'Emulated', prefix: 'MT', ports: 1 },
+  { id: 'x86', kind: 'ext', emu: 'v86', label: 'x86 VM', sub: 'Any 32-bit x86 ISO or raw disk', group: 'Emulated', prefix: 'VM', ports: 1 },
 ];
 export const tpl = id => TEMPLATES.find(t => t.id === id);
 
@@ -112,6 +123,7 @@ export function ifName(template, i) {
     case 'switch': return `e${i}`;
     case 'router': return `g0/${i}`;
     case 'ios': return `f${i}/0`;
+    case 'routeros': return `ether${i + 1}`;
     default: return `eth${i}`;
   }
 }

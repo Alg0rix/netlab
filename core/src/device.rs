@@ -170,6 +170,7 @@ impl Device {
                 ttl: 1,
                 payload: Payload::ArpRequest { target_ip: next_hop },
                 raw: None,
+                icmp_echo: None,
             };
             events.push(SimEvent::new(
                 tick,
@@ -295,6 +296,7 @@ impl Device {
                         ttl: 1,
                         payload: Payload::ArpReply { target_ip },
                 raw: None,
+                icmp_echo: None,
                     };
                     events.push(SimEvent::new(
                         tick,
@@ -335,6 +337,7 @@ impl Device {
                         ttl: 64,
                         payload: Payload::IcmpEchoReply,
                 raw: None,
+                icmp_echo: frame.icmp_echo.clone(),
                     };
                     events.push(SimEvent::new(
                         tick,

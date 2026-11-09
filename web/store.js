@@ -1,16 +1,17 @@
 // Persistence: router images in IndexedDB (they're 20–150 MB), the lab itself
 // in localStorage (autosave) and as downloadable .netlab.json files.
 
-const DB = 'netlab', STORE = 'images', NVRAM = 'nvram';
+const DB = 'netlab', STORE = 'images', NVRAM = 'nvram', DISKS = 'disks';
 let dbp = null;
 function db() {
   if (!dbp) dbp = new Promise((res, rej) => {
     try {
-      const r = indexedDB.open(DB, 2);
+      const r = indexedDB.open(DB, 3);
       r.onupgradeneeded = () => {
         const d = r.result;
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'name' });
         if (!d.objectStoreNames.contains(NVRAM)) d.createObjectStore(NVRAM, { keyPath: 'uid' });
+        if (!d.objectStoreNames.contains(DISKS)) d.createObjectStore(DISKS, { keyPath: 'uid' });
       };
       r.onsuccess = () => {
         r.result.onversionchange = () => r.result.close();   // never block a newer tab's upgrade
@@ -28,6 +29,14 @@ function db() {
 }
 const memImages = new Map(); // fallback when IndexedDB is unavailable
 
+// Large payloads go in as Blobs: Chrome caps a single structured-clone value at
+// ~127 MB, but Blobs are stored out of line. Older records hold ArrayBuffers.
+async function materialize(rec) {
+  if (!rec) return rec;
+  if (rec.blob) return { ...rec, data: await rec.blob.arrayBuffer() };
+  return rec;
+}
+
 async function tx(mode, fn, store = STORE) {
   const d = await db();
   return new Promise((res, rej) => {
@@ -35,6 +44,7 @@ async function tx(mode, fn, store = STORE) {
     const r = fn(t.objectStore(store));
     t.oncomplete = () => res(r?.result);
     t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error ?? new Error('transaction aborted'));
   });
 }
 
@@ -42,23 +52,24 @@ export const images = {
   async list() {
     try {
       const all = await tx('readonly', s => s.getAll());
-      return all.map(({ name, size, added, platform }) => ({ name, size, added, platform }));
+      return all.map(({ name, size, added, platform, kind }) => ({ name, size, added, platform, kind: kind ?? 'ios' }));
     } catch {
-      return [...memImages.values()].map(({ name, size, added, platform }) => ({ name, size, added, platform }));
+      return [...memImages.values()].map(({ name, size, added, platform, kind }) => ({ name, size, added, platform, kind: kind ?? 'ios' }));
     }
   },
-  async put(file) {
-    const data = await file.arrayBuffer();
-    const rec = { name: file.name, size: file.size, added: Date.now(), platform: guessPlatform(file.name), data };
-    try { await tx('readwrite', s => s.put(rec)); } catch { memImages.set(rec.name, rec); }
+  async put(file, kind = 'ios') {
+    const rec = { name: file.name, size: file.size, added: Date.now(), platform: guessPlatform(file.name), kind, blob: file };
+    try { await tx('readwrite', s => s.put(rec)); }
+    catch (e) { memImages.set(rec.name, rec); if (e?.name === 'QuotaExceededError') throw e; }
     return rec;
   },
+  /** returns the record with `data` as a fresh ArrayBuffer */
   async get(name) {
     try {
       const r = await tx('readonly', s => s.get(name));
-      if (r) return r;
+      if (r) return materialize(r);
     } catch { /* fall through */ }
-    return memImages.get(name) ?? null;
+    return materialize(memImages.get(name) ?? null);
   },
   async remove(name) {
     try { await tx('readwrite', s => s.delete(name)); } catch { /* ignore */ }
@@ -83,6 +94,35 @@ export const nvram = {
     memNvram.delete(uid);
   },
 };
+
+/** Per-node VM hard disks (whole raw image), keyed by uid. Large: 64 MB – 1 GB. */
+const memDisks = new Map();
+export const disks = {
+  async get(uid) {
+    try { const r = await tx('readonly', s => s.get(uid), DISKS); if (r) return materialize(r); } catch { /* fall through */ }
+    return materialize(memDisks.get(uid) ?? null);
+  },
+  /** cheap existence/metadata check without reading the whole disk */
+  async info(uid) {
+    try { const r = await tx('readonly', s => s.get(uid), DISKS); if (r) return { size: r.size, saved: r.saved }; } catch { /* fall through */ }
+    const m = memDisks.get(uid);
+    return m ? { size: m.size, saved: m.saved } : null;
+  },
+  async put(uid, data) {
+    // snapshot now (Blob copies synchronously) so the running guest can keep writing
+    const rec = { uid, blob: new Blob([data]), size: data.byteLength, saved: Date.now() };
+    try { await tx('readwrite', s => s.put(rec), DISKS); }
+    catch (e) { memDisks.set(uid, rec); throw e; }   // kept for this session; caller tells the user
+    return rec;
+  },
+  async remove(uid) {
+    try { await tx('readwrite', s => s.delete(uid), DISKS); } catch { /* ignore */ }
+    memDisks.delete(uid);
+  },
+};
+
+/** ask the browser not to evict our images/disks under storage pressure */
+export const persistStorage = () => navigator.storage?.persist?.().catch(() => false);
 
 export const newUid = () => (crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
 

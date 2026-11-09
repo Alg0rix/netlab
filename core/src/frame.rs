@@ -27,6 +27,10 @@ pub struct Frame {
     /// device builds a fresh response.
     #[serde(default)]
     pub raw: Option<Vec<u8>>,
+    /// ICMP echo identifier, sequence and data (everything after the 4-byte
+    /// ICMP header). A reply must echo these or real IP stacks drop it.
+    #[serde(default)]
+    pub icmp_echo: Option<Vec<u8>>,
 }
 
 impl Frame {
