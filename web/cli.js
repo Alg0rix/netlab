@@ -31,6 +31,58 @@ function parseAddr(toks) {
   return null;
 }
 
+// ── command grammar: drives Tab completion and contextual `?` help ──
+// key → { d: description, n: next level, cr: command may end here }
+// '<if>' expands to this node's interface names; other '<…>' are value slots.
+const ARG = (d, n, cr = true) => ({ d, n, cr });
+const COMMON = {
+  ping: ARG('Send ICMP echo requests', { '<ip>': ARG('Destination address', { '-c': ARG('Number of pings', { '<n>': ARG('Count 1-50') }, false) }) }, false),
+  hostname: ARG('Set the node name', { '<name>': ARG('New name') }, false),
+  clear: ARG('Clear the screen'),
+  history: ARG('Show command history'),
+  reload: ARG('Restart the node (clears ARP/MAC tables)'),
+  help: ARG('List commands'),
+};
+const HOST_TREE = {
+  ip: ARG('Show or set the IPv4 address', {
+    '<addr/len>': ARG('Address, e.g. 10.0.0.5/24', { '<gateway>': ARG('Default gateway') }),
+    dhcp: ARG('Get an address via DHCP (not modelled)'),
+  }),
+  show: ARG('Show information', {
+    ip: ARG('Address, gateway, MAC'),
+    arp: ARG('ARP cache'),
+    route: ARG('Routing table'),
+  }),
+  arp: ARG('ARP cache'),
+  set: ARG('Set a property', { pcname: ARG('Node name', { '<name>': ARG('New name') }, false) }, false),
+  ...COMMON,
+  clear: ARG('Clear the screen', { ip: ARG('Remove the IPv4 address') }),
+};
+const ROUTER_TREE = (isSwitch) => ({
+  show: ARG('Show running system information', {
+    ip: ARG('IP information', {
+      interface: ARG('Interface status', { brief: ARG('Brief summary') }),
+      route: ARG('Routing table'),
+      arp: ARG('ARP cache'),
+    }, false),
+    interface: ARG('Interface status'),
+    arp: ARG('ARP cache'),
+    ...(isSwitch ? { mac: ARG('MAC information', { 'address-table': ARG('Learned MAC addresses') }, false) } : {}),
+    'running-config': ARG('Current configuration as commands'),
+  }, false),
+  ip: ARG('Configure IP', {
+    address: ARG('Set an interface address', { '<if>': ARG('Interface', { '<addr/len>': ARG('Address, e.g. 10.1.1.1/24') }, false) }, false),
+    route: ARG('Add a static route', { '<prefix/len>': ARG('Destination, e.g. 0.0.0.0/0', { '<next-hop>': ARG('Next-hop address', { '<if>': ARG('Exit interface') }) }, false) }, false),
+  }, false),
+  no: ARG('Negate a command', {
+    ip: ARG('IP', {
+      address: ARG('Remove an interface address', { '<if>': ARG('Interface') }, false),
+      route: ARG('Remove a static route', { '<n>': ARG('Route number from "show ip route"') }, false),
+    }, false),
+  }, false),
+  ...COMMON,
+});
+
 export class SimShell {
   /** app: { lab, dev(id), meta(id), ifName(id,i), rename(id,name), refresh() } */
   constructor(app, devId, write) {
@@ -162,6 +214,77 @@ export class SimShell {
   portFor(ipStr) {
     const toN = s => s.split('.').reduce((a, o) => (a << 8 | +o) >>> 0, 0);
     return this.dev.ports.findIndex(p => p.ip && ((toN(p.ip) & toN(p.mask)) >>> 0) === ((toN(ipStr) & toN(p.mask)) >>> 0));
+  }
+
+  tree() { return this.isHost ? HOST_TREE : ROUTER_TREE(this.dev?.kind === 'switch'); }
+  ifNames() { return (this.dev?.ports ?? []).map((_, i) => this.app.ifName(this.id, i)); }
+
+  /** words valid at `level` that start with `part` ([{ w, d, slot }]) */
+  options(level, part) {
+    const out = [];
+    for (const [k, v] of Object.entries(level)) {
+      if (k === '<if>') { for (const n of this.ifNames()) if (n.startsWith(part)) out.push({ w: n, d: v.d, node: v }); }
+      else if (k.startsWith('<')) out.push({ w: k, d: v.d, node: v, slot: true });
+      else if (k.startsWith(part)) out.push({ w: k, d: v.d, node: v });
+    }
+    return out;
+  }
+
+  /** walk the grammar along completed tokens → { level, cr } or null if the line is off-grammar */
+  walk(tokens) {
+    let level = this.tree(), cr = true;
+    for (const t of tokens) {
+      const lc = t.toLowerCase();
+      const exact = this.options(level, lc).filter(o => !o.slot && o.w === lc);
+      const pre = exact.length ? exact : this.options(level, lc).filter(o => !o.slot);
+      const slot = Object.entries(level).find(([k]) => k.startsWith('<') && k !== '<if>');
+      let node;
+      if (pre.length === 1) node = pre[0].node;
+      else if (!pre.length && slot) node = slot[1];
+      else return null;
+      level = node.n ?? {};
+      cr = node.cr !== false;
+    }
+    return { level, cr };
+  }
+
+  /** Tab: complete the word under the cursor. Returns { line, list? } */
+  complete(line) {
+    const endsSpace = /\s$/.test(line) || line === '';
+    const toks = line.trim() ? line.trim().split(/\s+/) : [];
+    const part = endsSpace ? '' : (toks.pop() ?? '');
+    const at = this.walk(toks);
+    if (!at) return { line };
+    const opts = this.options(at.level, part.toLowerCase()).filter(o => !o.slot);
+    if (!opts.length) return { line };
+    const base = toks.length ? toks.join(' ') + ' ' : '';
+    if (opts.length === 1) return { line: base + opts[0].w + ' ' };
+    // extend to the longest common prefix; if that adds nothing, list the choices
+    let cp = opts[0].w;
+    for (const o of opts) while (!o.w.startsWith(cp)) cp = cp.slice(0, -1);
+    if (cp.length > part.length) return { line: base + cp };
+    return { line, list: opts.map(o => o.w) };
+  }
+
+  /** `?`: Cisco-style contextual help for the current line (not executed) */
+  contextHelp(line) {
+    this.write(this.prompt() + line + '?\n', 'echo');
+    const endsSpace = /\s$/.test(line) || line === '';
+    const toks = line.trim() ? line.trim().split(/\s+/) : [];
+    if (!endsSpace) {
+      // "sh?" → words that start with "sh"
+      const part = toks.pop();
+      const at = this.walk(toks);
+      const opts = at ? this.options(at.level, part.toLowerCase()).filter(o => !o.slot) : [];
+      this.write(opts.length ? opts.map(o => o.w).join('  ') + '\n' : '% Unrecognized command\n', opts.length ? '' : 'err');
+      return;
+    }
+    const at = this.walk(toks);
+    if (!at) return this.write('% Unrecognized command\n', 'err');
+    const opts = this.options(at.level, '');
+    const rows = opts.map(o => `  ${pad(o.w, 18)}${o.d}`);
+    if (at.cr && toks.length) rows.push(`  ${pad('<cr>', 18)}`);
+    this.write((rows.length ? rows.join('\n') : '  <cr>') + '\n');
   }
 
   help() {

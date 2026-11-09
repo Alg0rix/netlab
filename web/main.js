@@ -1576,7 +1576,7 @@ function nodeInspector(id) {
       <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img ? esc(img) : '<span class="muted">none selected</span>'}</span>
       <button class="btn sm" data-img>${ico('image')}${img ? 'Change' : 'Choose'}</button></div>
       <dl class="kv" style="margin-top:10px"><dt>Platform</dt><dd>c7200 · NPE-400</dd><dt>RAM</dt><dd>256 MB</dd>
-      <dt>Adapters</dt><dd>C7200-IO-FE + 3× PA-FE-TX</dd><dt>Engine</dt><dd>Dynamips → WASM</dd></dl>
+      <dt>Adapters</dt><dd>C7200-IO-FE + 3× PA-FE-TX</dd></dl>
       ${crossOriginIsolated ? '' : '<p class="muted" style="margin-top:8px">This page is not cross-origin isolated, so IOS cannot boot here. Serve with COOP/COEP (<span class="mono">make serve</span>).</p>'}</div>`);
     $('[data-img]', s).onclick = () => chooseImage(id);
     root.append(s);
@@ -1808,10 +1808,6 @@ function overviewInspector() {
       <li>Right-click a link → <b>Start capture</b> to see every frame decoded, and save it as .pcap for Wireshark.</li>
       <li>Switch to <b>Simulation</b> to step packet by packet.</li>
     </ol></div>
-    <div class="sect"><h4>Engine</h4><dl class="kv">
-      <dt>Fabric</dt><dd>Rust → WASM</dd>
-      <dt>Cisco IOS</dt><dd>${crossOriginIsolated ? 'Dynamips → WASM ✓' : 'needs COOP/COEP'}</dd>
-      <dt>Storage</dt><dd>local only</dd></dl></div>
   </div>`);
   return root;
 }
@@ -2112,9 +2108,19 @@ function simConsole(id) {
     else if (e.key === 'ArrowDown') { if (hi >= 0) { hi++; t.input.value = shell.history[hi] ?? ''; if (hi >= shell.history.length) hi = -1; } e.preventDefault(); }
     else if (e.key === 'l' && e.ctrlKey) { t.write('\x0c'); e.preventDefault(); }
     else if (e.key === 'c' && e.ctrlKey && shell.pingJob) { shell.pingJob.left = 0; shell.pings = []; t.write('^C\n'); e.preventDefault(); }
-    else if (e.key === '?' && !t.input.value) { shell.run('?'); e.preventDefault(); }
+    else if (e.key === 'Tab') {
+      // Tab completes like IOS/bash — and must never move focus out of the console
+      e.preventDefault();
+      const r = shell.complete(t.input.value);
+      if (r.list) { t.write(shell.prompt() + t.input.value + '\n', 'echo'); t.write(r.list.join('  ') + '\n'); }
+      t.input.value = r.line;
+    }
+    else if (e.key === '?') { shell.contextHelp(t.input.value); e.preventDefault(); }
   });
-  t.out.addEventListener('mouseup', () => { if (!getSelection().toString()) t.input.focus(); });
+  // clicking anywhere in the console (output, prompt row, gaps) puts the caret back in the input
+  t.el.querySelector('.term').addEventListener('mouseup', e => {
+    if (!getSelection().toString() && !e.target.closest('button')) t.input.focus();
+  });
   return {
     shell, el: t.el,
     focus: () => { setPrompt(); t.input.focus(); },
@@ -2347,7 +2353,7 @@ addEventListener('netlab-storage-blocked', () => toast('Close other netlab tabs 
 applyPrefs();
 const sp = prefs.get('speed', 2);
 $('#speed').value = sp; speed = SPEEDS[sp]; $('#speed-out').textContent = speed + '×';
-$('#st-iso').textContent = crossOriginIsolated ? 'isolated ✓' : 'not isolated — IOS off';
+$('#st-iso').textContent = crossOriginIsolated ? '' : 'Cisco IOS unavailable on this page';
 hydrateIcons();
 setMode('realtime');
 setTool('select');
