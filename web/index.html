@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>netlab</title>
+  <meta name="color-scheme" content="dark light" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ───────── top bar ───────── -->
+  <header id="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" class="brand-mark" aria-hidden="true">
+        <circle cx="5" cy="12" r="2.6"/><circle cx="19" cy="5" r="2.6"/><circle cx="19" cy="19" r="2.6"/>
+        <path d="M7.4 11L16.6 6M7.4 13l9.2 5M19 7.6v8.8" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <span>netlab</span>
+    </div>
+    <nav id="menubar" role="menubar"></nav>
+    <div class="labname">
+      <input id="lab-name" spellcheck="false" aria-label="Lab name" />
+      <span id="save-state" class="muted"></span>
+    </div>
+    <div class="spacer"></div>
+    <div class="group" id="power-group">
+      <button class="btn ghost" data-act="start-all" title="Start all nodes"><i data-i="play"></i>Start all</button>
+      <button class="btn ghost" data-act="stop-all" title="Stop all nodes"><i data-i="stop"></i>Stop all</button>
+    </div>
+    <div class="seg" id="mode" role="tablist" aria-label="Simulation mode">
+      <button data-mode="realtime" class="on">Realtime</button>
+      <button data-mode="sim">Simulation</button>
+    </div>
+    <div class="group sim-ctl" id="sim-ctl">
+      <button class="icon-btn" id="sim-play" title="Play / pause (Shift+Space)"><i data-i="play"></i></button>
+      <button class="icon-btn" id="sim-step" title="Step one tick (.)"><i data-i="step"></i></button>
+    </div>
+    <label class="speed" title="Simulation speed">
+      <input type="range" id="speed" min="0" max="4" step="1" value="2" />
+      <span id="speed-out">1×</span>
+    </label>
+    <button class="icon-btn" id="theme" title="Toggle theme"><i data-i="moon"></i></button>
+  </header>
+
+  <!-- ───────── left: node library ───────── -->
+  <aside id="library" class="panel">
+    <div class="panel-head">
+      <span>Devices</span>
+      <button class="icon-btn sm" data-act="images" title="Router images"><i data-i="image"></i></button>
+    </div>
+    <label class="search">
+      <i data-i="search"></i>
+      <input id="lib-filter" placeholder="Filter devices" spellcheck="false" />
+    </label>
+    <div id="lib-list"></div>
+    <div class="lib-foot muted">Drag onto the canvas, or click then click to place.</div>
+  </aside>
+
+  <!-- ───────── canvas ───────── -->
+  <section id="stage">
+    <div id="toolbar" class="float">
+      <button class="tool on" data-tool="select" title="Select (V)"><i data-i="select"></i><span>Select</span><kbd>V</kbd></button>
+      <button class="tool" data-tool="cable" title="Add a link (C)"><i data-i="cable"></i><span>Link</span><kbd>C</kbd></button>
+      <button class="tool" data-tool="note" title="Add a note (N)"><i data-i="note"></i><span>Note</span><kbd>N</kbd></button>
+      <span class="sep"></span>
+      <button class="icon-btn tool-shape" data-tool="rect" title="Rectangle (R) — drag to draw, Shift for square"><i data-i="rect"></i></button>
+      <button class="icon-btn tool-shape" data-tool="ellipse" title="Ellipse (O) — drag to draw, Shift for circle"><i data-i="ellipse"></i></button>
+      <button class="icon-btn tool-shape" data-tool="line" title="Line (/) — drag to draw, Shift snaps to 45°"><i data-i="line"></i></button>
+      <span class="sep"></span>
+      <button class="icon-btn" data-act="zoom-out" title="Zoom out (−)"><i data-i="zoomOut"></i></button>
+      <button class="zoom-read" data-act="zoom-reset" id="zoom-read" title="Reset zoom (0)">100%</button>
+      <button class="icon-btn" data-act="zoom-in" title="Zoom in (+)"><i data-i="zoomIn"></i></button>
+      <button class="icon-btn" data-act="fit" title="Fit to view (F)"><i data-i="fit"></i></button>
+      <span class="sep"></span>
+      <button class="icon-btn toggle" data-pref="labels" title="Interface labels (L)"><i data-i="tag"></i></button>
+      <button class="icon-btn toggle" data-pref="grid" title="Grid &amp; snap (G)"><i data-i="grid"></i></button>
+      <button class="icon-btn toggle" data-pref="minimap" title="Minimap (M)"><i data-i="map"></i></button>
+    </div>
+    <canvas id="canvas" tabindex="0" aria-label="Topology canvas"></canvas>
+    <canvas id="minimap" width="200" height="130" aria-hidden="true"></canvas>
+    <div id="hint" class="float"></div>
+    <div id="empty" class="float" hidden>
+      <div class="empty-title">Empty lab</div>
+      <div class="muted">Drag a device from the left, or <button class="link" data-act="demo">load the demo topology</button>.</div>
+    </div>
+  </section>
+
+  <!-- ───────── right: topology + inspector ───────── -->
+  <aside id="side" class="panel">
+    <section id="topo" class="collapsible">
+      <button class="panel-head clickable" data-collapse="topo">
+        <span>Topology</span><span class="count" id="topo-count"></span><i data-i="chev" class="chev"></i>
+      </button>
+      <div id="topo-list" class="body"></div>
+    </section>
+    <section id="inspector"></section>
+  </aside>
+
+  <!-- ───────── bottom dock ───────── -->
+  <section id="dock">
+    <div id="dock-resize" title="Drag to resize"></div>
+    <div class="dock-tabs" id="dock-tabs" role="tablist"></div>
+    <div id="dock-body"></div>
+  </section>
+
+  <footer id="status">
+    <span id="st-mode"></span>
+    <span id="st-tick"></span>
+    <span id="st-counts"></span>
+    <span class="spacer"></span>
+    <span id="st-cursor" class="muted"></span>
+    <span id="st-iso" class="muted"></span>
+  </footer>
+</div>
+
+<div id="ctx" class="menu" hidden role="menu"></div>
+<div id="modal-root"></div>
+<div id="toasts"></div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>

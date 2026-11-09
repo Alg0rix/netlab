@@ -1,0 +1,13 @@
+# Rust / wasm-pack output
+target/
+web/pkg/
+
+# Upstream Dynamips checkout — recreated by emu/fetch-dynamips.sh (+ emu/dynamips.patch)
+emu/dynamips/
+
+# build products / debug dumps
+emu/shim/*.o
+emu/shim/*.a
+emu/*.wat
+__pycache__/
+.DS_Store

@@ -1,0 +1,523 @@
+diff --git a/common/cisco_card.c b/common/cisco_card.c
+index 984305c..c4f7cc3 100644
+--- a/common/cisco_card.c
++++ b/common/cisco_card.c
+@@ -960,6 +960,17 @@ int vm_slot_cmd_add_nio(vm_instance_t *vm,char *str)
+          nio = netio_desc_create_null(nio_name);
+          break;
+ 
++#ifdef __EMSCRIPTEN__
++      case NETIO_TYPE_WASM:
++         if (count != 4) {
++            vm_error(vm,"invalid number of arguments for WASM NIO '%s'\n",str);
++            goto done;
++         }
++
++         nio = netio_desc_create_wasm(nio_name,atoi(tokens[3]));
++         break;
++#endif
++
+ #ifdef LINUX_ETH
+       case NETIO_TYPE_LINUX_ETH:
+          if (count != 4) {
+diff --git a/common/dev_am79c971.c b/common/dev_am79c971.c
+index 0cd7070..e9972de 100644
+--- a/common/dev_am79c971.c
++++ b/common/dev_am79c971.c
+@@ -741,10 +741,9 @@ static int am79c971_receive_pkt(struct am79c971_data *d,
+ }
+ 
+ /* Handle the RX ring */
+-static int am79c971_handle_rxring(netio_desc_t *nio,
+-                                  u_char *pkt,ssize_t pkt_len,
+-                                  struct am79c971_data *d)
++static int am79c971_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   struct am79c971_data *d = _nl_a1;
+    /* 
+     * Don't start receive if the RX ring address has not been set
+     * and if RX ON is not set.
+@@ -919,8 +918,9 @@ static int am79c971_handle_txring_single(struct am79c971_data *d)
+ }
+ 
+ /* Handle the TX ring */
+-static int am79c971_handle_txring(struct am79c971_data *d)
++static int am79c971_handle_txring(struct am79c971_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    int i;
+ 
+    AM79C971_LOCK(d);
+diff --git a/common/dev_c7200_bri.c b/common/dev_c7200_bri.c
+index 66f5e1b..6034872 100644
+--- a/common/dev_c7200_bri.c
++++ b/common/dev_c7200_bri.c
+@@ -516,8 +516,9 @@ static inline int m32_tx_scan(struct m32_data *d,u_int chan_id)
+ }
+ 
+ /* Scan the all channel TX rings */
+-static void m32_tx_scan_all_channels(struct m32_data *d)
++static void m32_tx_scan_all_channels(struct m32_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    u_int i;
+ 
+    for(i=0;i<M32_NR_CHANNELS;i++)
+diff --git a/common/dev_c7200_pos.c b/common/dev_c7200_pos.c
+index fcab240..335a6cd 100644
+--- a/common/dev_c7200_pos.c
++++ b/common/dev_c7200_pos.c
+@@ -499,10 +499,9 @@ static void dev_pos_oc3_receive_pkt(struct pos_oc3_data *d,
+ }
+ 
+ /* Handle the RX ring */
+-static int dev_pos_oc3_handle_rxring(netio_desc_t *nio,
+-                                     u_char *pkt,ssize_t pkt_len,
+-                                     struct pos_oc3_data *d)
++static int dev_pos_oc3_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   struct pos_oc3_data *d = _nl_a1;
+ #if DEBUG_RECEIVE
+    POS_LOG(d,"receiving a packet of %d bytes\n",pkt_len);
+    mem_dump(log_file,pkt,pkt_len);
+@@ -534,8 +533,9 @@ static void txdesc_set_next(struct pos_oc3_data *d,struct tx_desc *txd)
+ }
+ 
+ /* Handle the TX ring */
+-static int dev_pos_oc3_handle_txring(struct pos_oc3_data *d)
++static int dev_pos_oc3_handle_txring(struct pos_oc3_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    u_char pkt[POS_OC3_MAX_PKT_SIZE],*pkt_ptr;
+    m_uint32_t clen,tot_len,norm_len;
+    m_uint32_t tx_start,addr;
+diff --git a/common/dev_dec21140.c b/common/dev_dec21140.c
+index 5c7b458..17536af 100644
+--- a/common/dev_dec21140.c
++++ b/common/dev_dec21140.c
+@@ -679,10 +679,9 @@ static int dev_dec21140_receive_pkt(struct dec21140_data *d,
+ }
+ 
+ /* Handle the DEC21140 RX ring */
+-static int dev_dec21140_handle_rxring(netio_desc_t *nio,
+-                                      u_char *pkt,ssize_t pkt_len,
+-                                      struct dec21140_data *d)
++static int dev_dec21140_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   struct dec21140_data *d = _nl_a1;
+    /* 
+     * Don't start receive if the RX ring address has not been set
+     * and if the SR bit in CSR6 is not set yet.
+@@ -864,8 +863,9 @@ static int dev_dec21140_handle_txring_single(struct dec21140_data *d)
+ }
+ 
+ /* Handle the TX ring */
+-static int dev_dec21140_handle_txring(struct dec21140_data *d)
+-{  
++static int dev_dec21140_handle_txring(struct dec21140_data *d,void *_nl_unused)
++{
++   (void)_nl_unused;  
+    int i;
+ 
+    for(i=0;i<DEC21140_TXRING_PASS_COUNT;i++)
+diff --git a/common/dev_gt.c b/common/dev_gt.c
+index 81586af..d6a50e1 100644
+--- a/common/dev_gt.c
++++ b/common/dev_gt.c
+@@ -2300,8 +2300,9 @@ static void gt_eth_handle_port_txqueues(struct gt_data *d,u_int port)
+ }
+ 
+ /* Handle all TX rings of all Ethernet ports */
+-static int gt_eth_handle_txqueues(struct gt_data *d)
++static int gt_eth_handle_txqueues(struct gt_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    int i;
+ 
+    GT_LOCK(d);
+diff --git a/common/dev_i8254x.c b/common/dev_i8254x.c
+index 68d916c..220bade 100644
+--- a/common/dev_i8254x.c
++++ b/common/dev_i8254x.c
+@@ -902,8 +902,9 @@ static int dev_i8254x_handle_txring_single(struct i8254x_data *d)
+ }
+ 
+ /* Handle the TX ring */
+-static int dev_i8254x_handle_txring(struct i8254x_data *d)
++static int dev_i8254x_handle_txring(struct i8254x_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    int res,i;
+ 
+    for(i=0;i<I8254X_TXRING_PASS_COUNT;i++) {
+@@ -1010,10 +1011,9 @@ static int dev_i8254x_receive_pkt(struct i8254x_data *d,
+ }
+ 
+ /* Handle the RX ring */
+-static int dev_i8254x_handle_rxring(netio_desc_t *nio,
+-                                    u_char *pkt,ssize_t pkt_len,
+-                                    struct i8254x_data *d)
++static int dev_i8254x_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   struct i8254x_data *d = _nl_a1;
+    /* 
+     * Don't start receive if RX has not been enabled in RCTL register.
+     */
+diff --git a/common/dev_i8255x.c b/common/dev_i8255x.c
+index 3d0edd0..01d8779 100644
+--- a/common/dev_i8255x.c
++++ b/common/dev_i8255x.c
+@@ -901,10 +901,9 @@ void *dev_i8255x_access(cpu_gen_t *cpu,struct vdevice *dev,
+ }
+ 
+ /* Handle the RX ring */
+-static int dev_i8255x_handle_rxring(netio_desc_t *nio,
+-                                    u_char *pkt,ssize_t pkt_len,
+-                                    struct i8255x_data *d)
+-{  
++static int dev_i8255x_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
++{
++   struct i8255x_data *d = _nl_a1;  
+    int res = FALSE;
+  
+    EEPRO_LOCK(d);
+diff --git a/common/dev_mueslix.c b/common/dev_mueslix.c
+index 6b03a32..c3c458a 100644
+--- a/common/dev_mueslix.c
++++ b/common/dev_mueslix.c
+@@ -741,10 +741,9 @@ static void dev_mueslix_receive_pkt(struct mueslix_channel *channel,
+ }
+ 
+ /* Handle the Mueslix RX ring of the specified channel */
+-static int dev_mueslix_handle_rxring(netio_desc_t *nio,
+-                                     u_char *pkt,ssize_t pkt_len,
+-                                     struct mueslix_channel *channel)
+-{  
++static int dev_mueslix_handle_rxring(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
++{
++   struct mueslix_channel *channel = _nl_a1;  
+    struct mueslix_data *d = channel->parent;
+ 
+ #if DEBUG_RECEIVE
+@@ -904,8 +903,9 @@ static int dev_mueslix_handle_txring_single(struct mueslix_channel *channel)
+ }
+ 
+ /* Handle the TX ring of a specific channel */
+-static int dev_mueslix_handle_txring(struct mueslix_channel *channel)
++static int dev_mueslix_handle_txring(struct mueslix_channel *channel,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    struct mueslix_data *d = channel->parent;
+    int res,i;
+ 
+diff --git a/common/dev_mv64460.c b/common/dev_mv64460.c
+index b6666ee..de67f5d 100644
+--- a/common/dev_mv64460.c
++++ b/common/dev_mv64460.c
+@@ -1539,8 +1539,9 @@ static void mv64460_eth_handle_port_txqueues(struct mv64460_data *d,u_int port)
+ }
+ 
+ /* Handle all TX queues of all Ethernet ports */
+-static int mv64460_eth_handle_txqueues(struct mv64460_data *d)
++static int mv64460_eth_handle_txqueues(struct mv64460_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    int i;
+ 
+    MV64460_LOCK(d);
+diff --git a/common/dev_nm_16esw.c b/common/dev_nm_16esw.c
+index 96320a1..f2be983 100644
+--- a/common/dev_nm_16esw.c
++++ b/common/dev_nm_16esw.c
+@@ -2254,8 +2254,9 @@ static int bcm5600_handle_tx_pkt(struct nm_16esw_data *d,
+ }
+ 
+ /* Handle the TX ring */
+-static int dev_bcm5600_handle_txring(struct nm_16esw_data *d)
++static int dev_bcm5600_handle_txring(struct nm_16esw_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    struct bcm5600_pkt pkt_data;
+    m_uint32_t tdes[4],txd_len;
+ 
+diff --git a/common/dev_pa_a1.c b/common/dev_pa_a1.c
+index 7570f4d..ea05eda 100644
+--- a/common/dev_pa_a1.c
++++ b/common/dev_pa_a1.c
+@@ -939,8 +939,9 @@ static void ti1570_scan_tx_dma_entry(struct pa_a1_data *d,m_uint32_t index)
+ }
+ 
+ /* Analyze the TX schedule table */
+-static void ti1570_scan_tx_sched_table(struct pa_a1_data *d)
++static void ti1570_scan_tx_sched_table(struct pa_a1_data *d,void *_nl_unused)
+ {
++   (void)_nl_unused;
+    m_uint32_t cw,index0,index1;
+    u_int i;
+ 
+@@ -1326,10 +1327,9 @@ static int ti1570_store_rx_cell(struct pa_a1_data *d,
+ }
+ 
+ /* Handle a received ATM cell */
+-static int ti1570_handle_rx_cell(netio_desc_t *nio,
+-                                 u_char *atm_cell,ssize_t cell_len,
+-                                 struct pa_a1_data *d)
++static int ti1570_handle_rx_cell(netio_desc_t *nio,u_char *atm_cell,ssize_t cell_len,void *_nl_a1,void *_nl_arg2)
+ {
++   struct pa_a1_data *d = _nl_a1;
+    m_uint32_t atm_hdr,vpi,vci,vci_idx,vci_mask;
+    m_uint32_t vci_max,rvd_entry,bptr,pti,ptr;
+    ti1570_rx_dma_entry_t *rde = NULL;
+diff --git a/common/dev_vtty.c b/common/dev_vtty.c
+index 38f2ba6..d8941fb 100644
+--- a/common/dev_vtty.c
++++ b/common/dev_vtty.c
+@@ -511,6 +511,9 @@ vtty_t *vtty_create(vm_instance_t *vm,char *name,int type,int tcp_port,
+    }
+    memset(vtty,0,sizeof(*vtty));
+    vtty->name = name;
++#ifdef __EMSCRIPTEN__
++   type = VTTY_TYPE_WASM;
++#endif
+    vtty->type = type;
+    vtty->vm   = vm;
+    vtty->fd_count = 0;
+@@ -523,6 +526,7 @@ vtty_t *vtty_create(vm_instance_t *vm,char *name,int type,int tcp_port,
+     
+    switch (vtty->type) {
+       case VTTY_TYPE_NONE:
++      case VTTY_TYPE_WASM:
+          break;
+ 
+       case VTTY_TYPE_TERM:
+@@ -1099,6 +1103,10 @@ int vtty_is_char_avail(vtty_t *vtty)
+    return(res);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++extern void nl_console_out(void *vtty,const void *buf,int len);
++#endif
++
+ /* Put char to vtty */
+ void vtty_put_char(vtty_t *vtty, char ch)
+ {
+@@ -1106,6 +1114,12 @@ void vtty_put_char(vtty_t *vtty, char ch)
+       case VTTY_TYPE_NONE:
+          break;
+ 
++#ifdef __EMSCRIPTEN__
++      case VTTY_TYPE_WASM:
++         nl_console_out(vtty,&ch,1);
++         break;
++#endif
++
+       case VTTY_TYPE_TERM:
+       case VTTY_TYPE_SERIAL:
+          if (write(vtty->fd_array[0],&ch,1) != 1) {
+diff --git a/common/dev_vtty.h b/common/dev_vtty.h
+index 721a18b..f632aa0 100644
+--- a/common/dev_vtty.h
++++ b/common/dev_vtty.h
+@@ -26,6 +26,7 @@ enum {
+    VTTY_TYPE_TERM,
+    VTTY_TYPE_TCP,
+    VTTY_TYPE_SERIAL,
++   VTTY_TYPE_WASM,
+ };
+ 
+ /* VTTY connection states (for TCP) */
+diff --git a/common/dynamips_common.h b/common/dynamips_common.h
+index c112f5c..1ac81b9 100644
+--- a/common/dynamips_common.h
++++ b/common/dynamips_common.h
+@@ -74,6 +74,8 @@
+ #define ARCH_BYTE_ORDER ARCH_LITTLE_ENDIAN
+ #elif defined(__sw_64)
+ #define ARCH_BYTE_ORDER ARCH_LITTLE_ENDIAN
++#elif defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__) || defined(__EMSCRIPTEN__)
++#define ARCH_BYTE_ORDER ARCH_LITTLE_ENDIAN
+ #endif
+ 
+ #ifndef ARCH_BYTE_ORDER
+diff --git a/common/eth_switch.c b/common/eth_switch.c
+index f930eed..8189c80 100644
+--- a/common/eth_switch.c
++++ b/common/eth_switch.c
+@@ -407,9 +407,9 @@ static inline int ethsw_receive(ethsw_table_t *t,netio_desc_t *nio,
+ }
+ 
+ /* Receive a packet (handle the locking part) */
+-static int ethsw_recv_pkt(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,
+-                          ethsw_table_t *t)
++static int ethsw_recv_pkt(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   ethsw_table_t *t = _nl_a1;
+    if (ETHSW_TRYLOCK(t) == 0) {
+       ethsw_receive(t,nio,pkt,pkt_len);
+       ETHSW_UNLOCK(t);
+diff --git a/common/net_io.c b/common/net_io.c
+index 526a162..b366d93 100644
+--- a/common/net_io.c
++++ b/common/net_io.c
+@@ -81,6 +81,9 @@ static netio_type_t netio_types[NETIO_TYPE_MAX] = {
+ #endif
+    { "fifo"      , "FIFO (intra-hypervisor)" },
+    { "null"      , "Null device" },
++#ifdef __EMSCRIPTEN__
++   { "wasm"      , "netlab WASM bridge" },
++#endif
+ };
+ 
+ /* Get NETIO type given a description */
+@@ -1739,3 +1742,43 @@ int netio_rxl_init(void)
+ 
+    return(0);
+ }
++
++/*
++ * =========================================================================
++ * WASM bridge NIO (Emscripten builds only)
++ * =========================================================================
++ */
++#ifdef __EMSCRIPTEN__
++extern void *nl_nio_wasm_new(int link_id);
++extern ssize_t nl_nio_wasm_send(void *desc,void *pkt,size_t len);
++extern ssize_t nl_nio_wasm_recv(void *desc,void *pkt,size_t len);
++extern void nl_nio_wasm_free(void *desc);
++
++/* Create a new NetIO descriptor with WASM bridge method */
++netio_desc_t *netio_desc_create_wasm(char *nio_name,int link_id)
++{
++   netio_desc_t *nio;
++   void *d;
++
++   if (!(d = nl_nio_wasm_new(link_id)))
++      return NULL;
++
++   if (!(nio = netio_create(nio_name))) {
++      nl_nio_wasm_free(d);
++      return NULL;
++   }
++
++   nio->type = NETIO_TYPE_WASM;
++   nio->send = nl_nio_wasm_send;
++   nio->recv = nl_nio_wasm_recv;
++   nio->free = nl_nio_wasm_free;
++   nio->dptr = d;
++
++   if (netio_record(nio) == -1) {
++      netio_free(nio,NULL);
++      return NULL;
++   }
++
++   return nio;
++}
++#endif
+diff --git a/common/net_io.h b/common/net_io.h
+index bf8eee2..38735d2 100644
+--- a/common/net_io.h
++++ b/common/net_io.h
+@@ -44,6 +44,7 @@ enum {
+ #endif
+    NETIO_TYPE_FIFO,
+    NETIO_TYPE_NULL,
++   NETIO_TYPE_WASM,
+    NETIO_TYPE_MAX,
+ };
+ 
+@@ -287,6 +288,9 @@ netio_desc_t *netio_desc_create_fifo(char *nio_name);
+ /* Create a new NetIO descriptor with NULL method */
+ netio_desc_t *netio_desc_create_null(char *nio_name);
+ 
++/* Create a NetIO descriptor with WASM bridge method (Emscripten only) */
++netio_desc_t *netio_desc_create_wasm(char *nio_name,int link_id);
++
+ /* Acquire a reference to NIO from registry (increment reference count) */
+ netio_desc_t *netio_acquire(char *name);
+ 
+diff --git a/common/net_io_bridge.c b/common/net_io_bridge.c
+index f859c39..f3a9408 100644
+--- a/common/net_io_bridge.c
++++ b/common/net_io_bridge.c
+@@ -23,9 +23,9 @@
+ #define PKT_MAX_SIZE 2048
+ 
+ /* Receive a packet */
+-static int netio_bridge_recv_pkt(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,
+-                                 netio_bridge_t *t)
++static int netio_bridge_recv_pkt(netio_desc_t *nio,u_char *pkt,ssize_t pkt_len,void *_nl_a1,void *_nl_arg2)
+ {
++   netio_bridge_t *t = _nl_a1;
+    int i;
+ 
+    NETIO_BRIDGE_LOCK(t);
+diff --git a/stable/CMakeLists.txt b/stable/CMakeLists.txt
+index d3f92ba..9b8de18 100644
+--- a/stable/CMakeLists.txt
++++ b/stable/CMakeLists.txt
+@@ -39,26 +39,37 @@ set ( ROM2C_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/rom2c${CMAKE_EXECUTABLE_SUFF
+ # mips64_microcode_dump.inc
+ set ( _input "${LOCAL}/mips64_microcode" )
+ set ( _output "${CMAKE_CURRENT_BINARY_DIR}/mips64_microcode_dump.inc" )
++if ( EMSCRIPTEN )
++   # rom2c is a host tool; use pre-generated dumps for the wasm build
++   configure_file ( "${CMAKE_SOURCE_DIR}/../pregen/mips64_microcode_dump.inc" ${_output} COPYONLY )
++   add_custom_target ( mips64_microcode_dump_stable DEPENDS ${_output} )
++else ()
+ add_custom_command (
+    OUTPUT ${_output}
+-   COMMAND ${ROM2C_EXECUTABLE} ARGS ${_input} ${_output} 0xbfc00000
++   COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} ${ROM2C_EXECUTABLE} ARGS ${_input} ${_output} 0xbfc00000
+    DEPENDS rom2c ${_input}
+    )
+ add_custom_target ( mips64_microcode_dump_stable
+    DEPENDS ${_output}
+    )
++endif ()
+ 
+ # ppc32_microcode_dump.inc
+ set ( _input "${LOCAL}/ppc32_microcode" )
+ set ( _output "${CMAKE_CURRENT_BINARY_DIR}/ppc32_microcode_dump.inc" )
++if ( EMSCRIPTEN )
++   configure_file ( "${CMAKE_SOURCE_DIR}/../pregen/ppc32_microcode_dump.inc" ${_output} COPYONLY )
++   add_custom_target ( ppc32_microcode_dump_stable DEPENDS ${_output} )
++else ()
+ add_custom_command (
+    OUTPUT ${_output}
+-   COMMAND ${ROM2C_EXECUTABLE} ARGS ${_input} ${_output} 0xfff00000
++   COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} ${ROM2C_EXECUTABLE} ARGS ${_input} ${_output} 0xfff00000
+    DEPENDS rom2c ${_input}
+    )
+ add_custom_target ( ppc32_microcode_dump_stable
+    DEPENDS ${_output}
+    )
++endif ()
+ 
+ # nvram_export
+ if ( BUILD_NVRAM_EXPORT )
+@@ -291,6 +302,9 @@ add_executable ( dynamips_nojit_stable
+    "${COMMON}/ppc32_nojit_trans.c"
+    )
+ add_dependencies ( dynamips_nojit_stable ${_dependencies} )
++if ( EMSCRIPTEN )
++   target_sources ( dynamips_nojit_stable PRIVATE "${CMAKE_SOURCE_DIR}/../wasm/nl_bridge.c" )
++endif ()
+ target_link_libraries ( dynamips_nojit_stable ${DYNAMIPS_LIBRARIES} )
+ maybe_rename_to_dynamips ( dynamips_nojit_stable )
+ install_executable ( dynamips_nojit_stable )
+diff --git a/stable/mips64_jit.c b/stable/mips64_jit.c
+index a6213e7..6b74d1d 100644
+--- a/stable/mips64_jit.c
++++ b/stable/mips64_jit.c
+@@ -648,9 +648,11 @@ mips64_jit_tcb_t *mips64_jit_tcb_compile(cpu_mips_t *cpu,m_uint64_t vaddr)
+ 
+    mips64_jit_tcb_add_end(block);
+    mips64_jit_tcb_apply_patches(cpu,block);
++#ifndef __EMSCRIPTEN__
+    for(i = 0; i < block->jit_chunk_pos; i++)
+       __builtin___clear_cache(block->jit_chunks[i]->ptr, block->jit_chunks[i]->ptr + 32768);
+    __builtin___clear_cache(block->jit_buffer->ptr, block->jit_ptr);
++#endif
+    mips64_jit_tcb_free_patches(block);
+ 
+    /* Add the block to the linked list */
