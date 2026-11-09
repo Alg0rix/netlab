@@ -161,7 +161,9 @@ function restore(data) {
 
   labName = data?.name || 'Untitled lab';
   const idmap = new Map();
+  let minted = false;   // nodes from older saves get a uid now — persist it
   for (const n of data?.nodes ?? []) {
+    if (!n.uid) minted = true;
     const t = tpl(n.tpl) ?? tpl('pc');
     const id = lab.add_device(t.kind, n.name, n.x, n.y);
     idmap.set(n.id, id);
@@ -184,6 +186,7 @@ function restore(data) {
   $('#lab-name').value = labName;
   refresh();
   renderAll();
+  if (minted) dirty();
 }
 
 let saveTimer = null;
@@ -206,6 +209,7 @@ function registerNode(id, tplId, name, image = null, uid = null) {
     // IOS `write memory` → NVRAM snapshot from the worker → IndexedDB
     node.onNvram = data => nvram.put(m.uid, data).then(rec => {
       m.nvSaved = rec.saved;
+      autosave.save(serialize());   // the uid this NVRAM is keyed by must be durable now
       pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${byId.get(id)?.name ?? name}: startup-config saved in browser (${(data.length / 1024).toFixed(0)} KB NVRAM)` });
       renderInspector(true);
     });
@@ -517,17 +521,24 @@ function shapeAt(wx, wy) {
       continue;
     }
     if (sh.kind === 'rect') {
-      const inside = wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
       const nearEdge = wx >= b.x - t && wx <= b.x + b.w + t && wy >= b.y - t && wy <= b.y + b.h + t &&
         (Math.abs(wx - b.x) < t || Math.abs(wx - b.x - b.w) < t || Math.abs(wy - b.y) < t || Math.abs(wy - b.y - b.h) < t);
-      if (nearEdge || (inside && sh.fill)) return sh;
+      if (nearEdge || inLabel(sh, b, wx, wy)) return sh;
       continue;
     }
     const rx = b.w / 2 || 1, ry = b.h / 2 || 1, dx = wx - b.x - rx, dy = wy - b.y - ry;
     const r = Math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2);
-    if (Math.abs(r - 1) * Math.min(rx, ry) < t || (r < 1 && sh.fill)) return sh;
+    if (Math.abs(r - 1) * Math.min(rx, ry) < t || inLabel(sh, b, wx, wy)) return sh;
   }
   return null;
+}
+// interiors are click-through (zones sit under nodes); the label is a grab handle
+function inLabel(sh, b, wx, wy) {
+  if (!sh.text) return false;
+  const w = sh.text.length * 7 + 8;
+  if (sh.kind === 'rect') return wx >= b.x + 6 && wx <= b.x + 10 + w && wy >= b.y + 4 && wy <= b.y + 24;
+  const cx = b.x + b.w / 2, ty = b.y + Math.min(14, b.h / 4);
+  return Math.abs(wx - cx) <= w / 2 && wy >= ty - 4 && wy <= ty + 18;
 }
 function shapeHandles(sh) {
   if (sh.kind === 'line') return [['p1', sh.x, sh.y], ['p2', sh.x + sh.w, sh.y + sh.h]];
@@ -2332,6 +2343,7 @@ function DEMO() {
 
 /* ════════════════════════════ start ════════════════════════════ */
 
+addEventListener('netlab-storage-blocked', () => toast('Close other netlab tabs — browser storage is locked by an older version. Images and configs are kept in memory until reload.', 'err'));
 applyPrefs();
 const sp = prefs.get('speed', 2);
 $('#speed').value = sp; speed = SPEEDS[sp]; $('#speed-out').textContent = speed + '×';

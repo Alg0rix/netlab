@@ -12,8 +12,16 @@ function db() {
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'name' });
         if (!d.objectStoreNames.contains(NVRAM)) d.createObjectStore(NVRAM, { keyPath: 'uid' });
       };
-      r.onsuccess = () => res(r.result);
+      r.onsuccess = () => {
+        r.result.onversionchange = () => r.result.close();   // never block a newer tab's upgrade
+        res(r.result);
+      };
       r.onerror = () => rej(r.error);
+      // an old netlab tab holds the v1 database open: fall back to memory, tell the user
+      r.onblocked = () => {
+        dispatchEvent(new CustomEvent('netlab-storage-blocked'));
+        rej(new Error('IndexedDB upgrade blocked by another netlab tab'));
+      };
     } catch (e) { rej(e); }
   });
   return dbp;
