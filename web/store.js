@@ -93,6 +93,10 @@ export const nvram = {
     try { await tx('readwrite', s => s.delete(uid), NVRAM); } catch { /* ignore */ }
     memNvram.delete(uid);
   },
+  async list() {
+    try { return (await tx('readonly', s => s.getAll(), NVRAM)).map(({ uid, saved, data }) => ({ uid, saved, size: data?.byteLength ?? 0 })); }
+    catch { return [...memNvram.values()].map(({ uid, saved, data }) => ({ uid, saved, size: data?.byteLength ?? 0 })); }
+  },
 };
 
 /** Per-node VM hard disks (whole raw image), keyed by uid. Large: 64 MB – 1 GB. */
@@ -101,6 +105,18 @@ export const disks = {
   async get(uid) {
     try { const r = await tx('readonly', s => s.get(uid), DISKS); if (r) return materialize(r); } catch { /* fall through */ }
     return materialize(memDisks.get(uid) ?? null);
+  },
+  /** [{ uid, size, saved }] without reading the data */
+  async list() {
+    try {
+      return await new Promise(async (res, fail) => {
+        const d = await db();
+        const out = [];
+        const req = d.transaction(DISKS).objectStore(DISKS).openCursor();
+        req.onsuccess = () => { const c = req.result; if (!c) return res(out); out.push({ uid: c.value.uid, size: c.value.size, saved: c.value.saved }); c.continue(); };
+        req.onerror = () => fail(req.error);
+      });
+    } catch { return [...memDisks.values()].map(({ uid, size, saved }) => ({ uid, size, saved })); }
   },
   /** cheap existence/metadata check without reading the whole disk */
   async info(uid) {

@@ -19,6 +19,7 @@ export const VM_DEFAULTS = {
 };
 
 const DISK_SAVE_IDLE_MS = 8000;   // save the disk this long after the guest stops writing
+const DISK_SAVE_MAX_MS = 45000;   // ...but never leave it dirty longer than this
 const SERIAL_PACE_MS = 12;        // the emulated UART drops bytes sent in a burst
 
 // US-layout set-1 scancodes for the keys a console needs
@@ -50,6 +51,8 @@ export class VMNode {
     this.serialQ = [];
     this.serialTimer = null;
     this.saveTimer = null;
+    this.dirtySince = 0;
+    this.saving = null;
     this.screen = makeScreen();
   }
 
@@ -94,14 +97,22 @@ export class VMNode {
       if (serBuf.length === 1) queueMicrotask(() => { const out = Uint8Array.from(serBuf); serBuf = []; this.onSerial && this.onSerial(out); });
     });
     vm.add_listener('ide-write-end', () => {
+      const now = Date.now();
+      if (!this.dirtySince) this.dirtySince = now;
       clearTimeout(this.saveTimer);
-      this.saveTimer = setTimeout(() => this.saveDisk(), DISK_SAVE_IDLE_MS);
+      // a guest that keeps writing would push an idle-only save back forever
+      const wait = Math.max(0, Math.min(DISK_SAVE_IDLE_MS, this.dirtySince + DISK_SAVE_MAX_MS - now));
+      this.saveTimer = setTimeout(() => this.saveDisk(), wait);
     });
   }
 
   async saveDisk() {
     clearTimeout(this.saveTimer);
-    if (this.disk && this.onDisk) await this.onDisk(this.disk);
+    if (this.saving) return this.saving;          // one snapshot at a time
+    if (!this.disk || !this.onDisk) return;
+    this.dirtySince = 0;
+    this.saving = this.onDisk(this.disk).finally(() => { this.saving = null; });
+    return this.saving;
   }
 
   /** fabric → guest NIC */

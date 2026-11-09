@@ -524,6 +524,9 @@ function stepOnce() {
 }
 
 function setMode(m) {
+  if (m === 'sim' && mode !== 'sim' && [...emus.values()].some(n => n.state !== 'stopped')) {
+    toast('Simulation pauses the network: running IOS/RouterOS/VM guests get no traffic until you press Play or switch back to Realtime.');
+  }
   mode = m;
   playing = false;
   $$('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
@@ -1507,6 +1510,7 @@ function imageManager(forDev = null) {
       <div class="callout">${ico('info')}<div>Images stay in this browser (IndexedDB) and are never uploaded anywhere. ${help}</div></div>
       <ul class="imglist" hidden></ul>
       <div class="drop-zone" tabindex="0">${ico('upload')}<div><b>Drop an image here</b> or click to browse</div><div class="muted">${esc(accept.replaceAll(',', ' '))}</div></div>
+      ${forDev == null ? '<div class="orphans" hidden><h4 style="margin:16px 0 8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Storage not used by this lab</h4><ul class="imglist"></ul></div>' : ''}
     </div>`);
     const m = modal(forDev != null ? `Choose an image for ${byId.get(forDev)?.name}` : 'Images', body);
     let chosen = null;
@@ -1526,6 +1530,26 @@ function imageManager(forDev = null) {
         list.append(li);
       }
     };
+    // VM disks / IOS configs left behind by deleted labs (each disk is 64 MB+)
+    const drawOrphans = async () => {
+      const box = $('.orphans', body);
+      if (!box) return;
+      const live = new Set([...meta.values()].map(x => x.uid));
+      const rows = [
+        ...(await disks.list()).filter(x => !live.has(x.uid)).map(x => ({ ...x, what: 'VM disk', del: () => disks.remove(x.uid) })),
+        ...(await nvram.list()).filter(x => !live.has(x.uid)).map(x => ({ ...x, what: 'IOS config', del: () => nvram.remove(x.uid) })),
+      ];
+      box.hidden = !rows.length;
+      const ul = $('ul', box);
+      ul.innerHTML = '';
+      for (const r of rows) {
+        const li = h(`<li><span class="nm"><span class="pill" style="margin-right:8px">${r.what}</span>${r.saved ? esc(new Date(r.saved).toLocaleString()) : ''}</span><span class="muted mono">${(r.size / 1e6).toFixed(1)} MB</span>
+          <span class="row"><button class="icon-btn sm" title="Delete">${UI.trash}</button></span></li>`);
+        $('button', li).onclick = async () => { await r.del(); drawOrphans(); };
+        ul.append(li);
+      }
+    };
+    drawOrphans();
     const add = async f => {
       if (!f) return;
       const s = await sniffImage(f);
@@ -1534,6 +1558,7 @@ function imageManager(forDev = null) {
         return toast(want[0] === 'ios' ? `${f.name} is not a Cisco IOS image (expected an ELF .bin)` : `${f.name} is a Cisco IOS image — add it to a Cisco 7200 node instead`, 'err');
       }
       if (s.warn) toast(s.warn, 'err');
+      if (s.kind === 'disk' && f.size > 512 * 1048576) toast(`${f.name} is ${(f.size / 1048576).toFixed(0)} MB — each node copies it and every disk save writes all of it; smaller images work much better.`, 'err');
       try { await images.put(f, s.kind); }
       catch (e) { return toast(e?.name === 'QuotaExceededError' ? 'Browser storage is full — delete unused images first' : `Could not store ${f.name}: ${e?.message ?? e}`, 'err'); }
       toast(`Stored ${f.name} (${KIND_LABEL[s.kind]})`, 'ok');
@@ -1820,8 +1845,8 @@ function vmSettings(id, d, st) {
     </div>
     <div class="sect"><h4>Hardware</h4>
       <div class="kv">
-        <dt>RAM</dt><dd><select class="field" data-ram ${running ? 'disabled' : ''}>${[64, 128, 256, 512, 1024].map(v => `<option value="${v}" ${v === m.ram ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
-        <dt>New disk</dt><dd><select class="field" data-disk ${running || m.diskSaved ? 'disabled' : ''}>${[64, 128, 256, 512, 1024].map(v => `<option value="${v}" ${v === m.diskMB ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
+        <dt>RAM</dt><dd><select class="field" data-ram ${running ? 'disabled' : ''}>${[64, 128, 256, 512].map(v => `<option value="${v}" ${v === m.ram ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
+        <dt>New disk</dt><dd><select class="field" data-disk ${running || m.diskSaved ? 'disabled' : ''}>${[64, 128, 256].map(v => `<option value="${v}" ${v === m.diskMB ? 'selected' : ''}>${v} MB</option>`).join('')}</select></dd>
         <dt>NIC model</dt><dd><select class="field" data-nic ${running ? 'disabled' : ''}>
           <option value="ne2k" ${m.nic === 'ne2k' ? 'selected' : ''}>NE2000 (works with RouterOS v6)</option>
           <option value="virtio" ${m.nic === 'virtio' ? 'selected' : ''}>virtio-net (modern Linux)</option></select></dd>
