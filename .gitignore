@@ -12,3 +12,7 @@ emu/*.wat
 __pycache__/
 .DS_Store
 web/_test/
+
+# showreel intermediates (recorded frames, rendered frames, audio) — rebuilt by promo/*
+promo/capture/out/
+promo/build/
