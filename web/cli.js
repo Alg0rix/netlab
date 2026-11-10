@@ -8,7 +8,7 @@ const WORDS = ['show', 'interface', 'brief', 'route', 'arp', 'address', 'address
   'dhcp', 'dns', 'nat', 'inside', 'outside', 'server', 'nslookup', 'curl',
   'switchport', 'mode', 'access', 'vlan', 'trunk', 'native', 'allowed',
   'access-list', 'access-group', 'permit', 'deny', 'helper-address', 'eq',
-  'ospf', 'traffic', 'network', 'area', 'tcp', 'udp', 'icmp'];
+  'ospf', 'traffic', 'network', 'area', 'tcp', 'udp', 'icmp', 'traceroute', 'source', 'static'];
 
 function expand(tok) {
   if (WORDS.includes(tok)) return tok;
@@ -41,6 +41,7 @@ function parseAddr(toks) {
 const ARG = (d, n, cr = true) => ({ d, n, cr });
 const COMMON = {
   ping: ARG('Send ICMP echo requests', { '<ip>': ARG('Destination address', { '-c': ARG('Number of pings', { '<n>': ARG('Count 1-50') }, false) }) }, false),
+  traceroute: ARG('ICMP probes with increasing TTL', { '<ip>': ARG('Destination address') }, false),
   traffic: ARG('Send TCP, UDP, or ICMP probes', {
     '<ip>': ARG('Destination', {
       tcp: ARG('TCP', { '<port>': ARG('Port', { '-c': ARG('Count', { '<n>': ARG('1-50') }, false) }, false) }, false),
@@ -99,7 +100,16 @@ const ROUTER_TREE = (isSwitch) => ({
     address: ARG('Set an interface address', { '<if>': ARG('Interface', { '<addr/len>': ARG('Address, e.g. 10.1.1.1/24') }, false) }, false),
     route: ARG('Add a static route', { '<prefix/len>': ARG('Destination, e.g. 0.0.0.0/0', { '<next-hop>': ARG('Next-hop address', { '<if>': ARG('Exit interface') }) }, false) }, false),
     nat: ARG('Source NAT role', {
-      inside: ARG('Inside (hosts to hide)', { '<if>': ARG('Interface') }, false),
+      inside: ARG('Inside (hosts to hide)', {
+        '<if>': ARG('Interface'),
+        source: ARG('Static translation', {
+          static: ARG('1:1 or a port forward', {
+            '<ip>': ARG('Inside address (1:1 onto the outside interface)'),
+            tcp: ARG('TCP port forward', { '<ip>': ARG('Inside host', { '<port>': ARG('Inside port', { '<outside>': ARG('Outside port') }, false) }, false) }, false),
+            udp: ARG('UDP port forward', { '<ip>': ARG('Inside host', { '<port>': ARG('Inside port', { '<outside>': ARG('Outside port') }, false) }, false) }, false),
+          }, false),
+        }, false),
+      }, false),
       outside: ARG('Outside (masquerade address)', { '<if>': ARG('Interface') }, false),
     }, false),
     'access-list': ARG('Extended ACL entry', { '<num>': ARG('List 1-199', { permit: ARG('Permit'), deny: ARG('Deny') }, false) }, false),
@@ -112,7 +122,18 @@ const ROUTER_TREE = (isSwitch) => ({
     ip: ARG('IP', {
       address: ARG('Remove an interface address', { '<if>': ARG('Interface') }, false),
       route: ARG('Remove a static route', { '<n>': ARG('Route number from "show ip route"') }, false),
-      nat: ARG('Clear a NAT role', { '<if>': ARG('Interface') }, false),
+      nat: ARG('Clear a NAT role or static map', {
+        '<if>': ARG('Interface'),
+        inside: ARG('Static map', {
+          source: ARG('Static', {
+            static: ARG('Remove a map', {
+              '<ip>': ARG('1:1 inside address'),
+              tcp: ARG('TCP forward', { '<port>': ARG('Outside port') }, false),
+              udp: ARG('UDP forward', { '<port>': ARG('Outside port') }, false),
+            }, false),
+          }, false),
+        }, false),
+      }, false),
       'access-list': ARG('Delete an ACL', { '<num>': ARG('List number') }, false),
       'access-group': ARG('Remove an ACL from an interface', { '<if>': ARG('Interface', { in: ARG('Inbound'), out: ARG('Outbound') }) }, false),
       'helper-address': ARG('Clear a DHCP helper', { '<if>': ARG('Interface') }, false),
@@ -175,7 +196,7 @@ export class SimShell {
     if (!this.dev) return this.write('% node was deleted\n', 'err');
     const toks = raw.split(/\s+/).map((t, i) => (i < 4 ? expand(t.toLowerCase()) : t));
     const head = toks[0];
-    const readOnly = ['show', 'ping', 'help', 'history', '?', 'traffic', 'nslookup', 'curl', 'nc', 'arp'].includes(head)
+    const readOnly = ['show', 'ping', 'traceroute', 'help', 'history', '?', 'traffic', 'nslookup', 'curl', 'nc', 'arp'].includes(head)
       || (head === 'clear' && !toks[1]);
     if (!readOnly) this.app.checkpoint?.();
     try {
@@ -199,6 +220,7 @@ export class SimShell {
       return;
     }
     if (c0 === 'ping') return this.ping(t.slice(1));
+    if (c0 === 'traceroute') return this.traceroute(t.slice(1));
     if (c0 === 'traffic') return this.traffic(t.slice(1));
     if (c0 === 'reload') { this.app.lab.set_power(this.id, false); this.app.lab.set_power(this.id, true); return this.write('Reloading… tables cleared.\n', 'dim'); }
 
@@ -279,6 +301,7 @@ export class SimShell {
       return;
     }
     if (c0 === 'ip' && c1 === 'nat') {
+      if (c2 === 'inside' && t[3] === 'source') return this.natStatic(t.slice(4), false);
       const role = c2;
       if (role !== 'inside' && role !== 'outside') throw new Error('usage: ip nat inside|outside <if>');
       const port = this.port(t[3]);
@@ -286,6 +309,7 @@ export class SimShell {
       return this.write(`${this.app.ifName(this.id, port)} is NAT ${role}\n`);
     }
     if (c0 === 'no' && c1 === 'ip' && c2 === 'nat') {
+      if (t[3] === 'inside' && t[4] && 'source'.startsWith(t[4])) return this.natStatic(t.slice(5), true);
       const port = this.port(t[3]);
       this.app.lab.set_nat(this.id, port, 'off');
       return this.write(`${this.app.ifName(this.id, port)} NAT cleared\n`);
@@ -534,6 +558,7 @@ export class SimShell {
       ['show ip | show interface', 'show addresses, gateway, MACs'],
       ['clear ip [if]', 'remove address on eth0 or <if>'],
       ['ping <ip> [-c n]', 'send ICMP echo requests'],
+      ['traceroute <ip>', 'ICMP probes, TTL 1 through 8'],
       ['traffic <ip> tcp|udp|icmp <port> -c n', 'send a burst of probes'],
       ['arp | show route', 'show ARP cache or routing table'],
       ['hostname <name>', 'rename this node'],
@@ -549,8 +574,12 @@ export class SimShell {
       ['ip route <net>/<len> <nh> [if]', 'add static route (0.0.0.0/0 = default)'],
       ['no ip route <n>', 'remove route n'],
       ['ip nat inside|outside <if>', 'source NAT (masquerade on outside)'],
-      ['show ip nat', 'NAT role of each interface'],
+      ['ip nat inside source static <ip>', '1:1 of that host onto the outside address'],
+      ['ip nat inside source static tcp|udp <ip> <in> <out>', 'static port forward'],
+      ['show ip nat', 'NAT roles and static maps'],
       ['no ip nat <if>', 'clear a NAT role'],
+      ['no ip nat inside source static <ip>', 'remove the 1:1 map'],
+      ['no ip nat inside source static tcp|udp <out>', 'remove a port forward'],
       ['ip access-list <n> permit|deny …', 'extended ACL (any, or address + wildcard, eq port)'],
       ['ip access-group <n> in|out <if>', 'apply an ACL; implicit deny at the end'],
       ['no ip access-list <n>', 'delete the list and detach it'],
@@ -568,6 +597,7 @@ export class SimShell {
       ] : []),
       ['traffic <ip> tcp|udp|icmp <port> -c n', ''],
       ['ping <ip> [-c n]', ''],
+      ['traceroute <ip>', 'ICMP time exceeded, 8 hops'],
       ['hostname <name> | clear | reload', ''],
     ];
     this.write(rows.map(([a, b]) => `  ${pad(a, 32)}${b}`).join('\n') + '\n');
@@ -679,6 +709,10 @@ export class SimShell {
         out.push(line);
       }
     }
+    for (const s of d.static_nat ?? []) {
+      if (!s.proto) out.push(`ip nat inside source static ${s.inside}`);
+      else out.push(`ip nat inside source static ${s.proto === 6 ? 'tcp' : 'udp'} ${s.inside} ${s.inside_port} ${s.outside_port}`);
+    }
     for (const n of d.ospf_nets ?? []) out.push(`router ospf network ${n.prefix} ${n.wild} area ${n.area}`);
     d.routes.forEach(r => { if (r.proto !== 'O') out.push(`ip route ${r.prefix} ${r.mask} ${r.next_hop}`); });
     out.push('end');
@@ -699,7 +733,37 @@ export class SimShell {
 
   showNat() {
     const rows = this.ports().map((p, i) => `${pad(this.app.ifName(this.id, i), 12)}${p.nat || 'off'}`);
+    for (const s of this.dev.static_nat ?? []) {
+      if (!s.proto) rows.push(`static ${s.inside} -> outside`);
+      else rows.push(`static ${s.proto === 6 ? 'tcp' : 'udp'} ${s.inside}:${s.inside_port} -> outside:${s.outside_port}`);
+    }
     this.write((rows.length ? rows.join('\n') : '(no interfaces)') + '\n');
+  }
+
+  natStatic(args, removing) {
+    const head = (args[0] || '').toLowerCase();
+    if (!head || !'static'.startsWith(head)) throw new Error('usage: ip nat inside source static <ip> | tcp|udp <ip> <inside-port> <outside-port>');
+    const kind = (args[1] || '').toLowerCase();
+    const l4 = kind === 'tcp' || kind === 'udp' ? kind : '';
+    if (removing) {
+      if (l4) {
+        const port = +args[2];
+        if (!(port > 0 && port < 65536) || !this.app.lab.nat_static_clear(this.id, '', l4, port)) throw new Error(`no ${l4} forward on outside port ${args[2] || '?'}`);
+        return this.write(`${l4} forward ${port} removed\n`);
+      }
+      if (!isIp(kind) || !this.app.lab.nat_static_clear(this.id, kind, 'ip', 0)) throw new Error('usage: no ip nat inside source static <inside-ip>');
+      return this.write(`static ${kind} removed\n`);
+    }
+    if (l4) {
+      const ip = args[2], inn = +args[3], out = +args[4];
+      if (!isIp(ip ?? '') || !(inn > 0 && inn < 65536) || !(out > 0 && out < 65536)) {
+        throw new Error(`usage: ip nat inside source static ${l4} <inside-ip> <inside-port> <outside-port>`);
+      }
+      if (!this.app.lab.nat_static(this.id, ip, l4, inn, out)) throw new Error('static forward was not added');
+      return this.write(`static ${l4} ${ip}:${inn} -> outside:${out}\n`);
+    }
+    if (!isIp(kind) || !this.app.lab.nat_static(this.id, kind, 'ip', 0, 0)) throw new Error('usage: ip nat inside source static <inside-ip>');
+    return this.write(`static ${kind} -> outside address\n`);
   }
 
   lookup(name) {
@@ -753,7 +817,7 @@ export class SimShell {
     const count = ci >= 0 ? Math.max(1, Math.min(50, +args[ci + 1] || 5)) : 5;
     if (!this.dev.powered) throw new Error('node is stopped — start it first');
     if (!this.dev.ports.some(p => p.ip)) throw new Error('no IPv4 address configured');
-    if (this.pingJob) throw new Error('a ping or traffic run is already going');
+    if (this.pingJob) throw new Error('a ping, traceroute, or traffic run is already going');
     this.pings = [];
     this.pingJob = { ip, left: count, seq: 0, next: 0, sent: 0, ok: 0, kind: 'icmp' };
     this.write(`PING ${ip}: 56 data bytes\n`, 'dim');
@@ -769,16 +833,50 @@ export class SimShell {
     const count = ci >= 0 ? Math.max(1, Math.min(50, +args[ci + 1] || 5)) : 5;
     if (!this.dev.powered) throw new Error('node is stopped — start it first');
     if (!this.dev.ports.some(p => p.ip)) throw new Error('no IPv4 address configured');
-    if (this.pingJob) throw new Error('a ping or traffic run is already going');
+    if (this.pingJob) throw new Error('a ping, traceroute, or traffic run is already going');
     this.pings = [];
     this.pingJob = { ip, left: count, seq: 0, next: 0, sent: 0, ok: 0, kind, port };
     this.write(`TRAFFIC ${kind.toUpperCase()} ${ip}${kind === 'icmp' ? '' : ':' + port} × ${count}\n`, 'dim');
+  }
+
+  traceroute(args) {
+    const ip = args.find(isIp);
+    if (!ip) throw new Error('usage: traceroute <ip>');
+    if (!this.dev.powered) throw new Error('node is stopped — start it first');
+    if (!this.dev.ports.some(p => p.ip)) throw new Error('no IPv4 address configured');
+    if (this.pingJob) throw new Error('a ping, traceroute, or traffic run is already going');
+    this.pingJob = { ip, kind: 'trace', hop: 1, max: 8, waiting: false, sent: 0 };
+    this.write(`traceroute to ${ip}, 8 hops max\n`, 'dim');
   }
 
   /** called every sim tick */
   onTick(tick) {
     const j = this.pingJob;
     if (!j) return;
+    if (j.kind === 'trace') {
+      const timeout = this.app.realtime?.() ? 2000 : 120;
+      if (j.waiting) {
+        if (tick - j.sent > timeout) {
+          this.write(`${j.hop}  *\n`, 'err');
+          j.waiting = false;
+          j.hop++;
+          if (j.hop > j.max) {
+            this.write('traceroute complete\n', 'dim');
+            this.pingJob = null;
+          }
+        }
+        return;
+      }
+      if (j.hop > j.max) {
+        this.write('traceroute complete\n', 'dim');
+        this.pingJob = null;
+        return;
+      }
+      j.sent = tick;
+      j.waiting = true;
+      if (!this.app.lab.probe_ttl(this.id, j.ip, j.hop)) this.write(`${j.hop}  could not send\n`, 'err');
+      return;
+    }
     if (j.left > 0 && tick >= j.next) {
       j.seq++; j.left--; j.sent++;
       j.next = tick + (this.app.realtime?.() ? 400 : 30);   // ~0.4 s apart in realtime
@@ -806,7 +904,28 @@ export class SimShell {
   /** called with every sim event */
   onEvent(ev) {
     if (ev.device !== this.id) return;
-    if (ev.kind === 'dhcp' || ev.kind === 'dns' || ev.kind === 'tcp' || ev.kind === 'http' || ev.kind === 'udp' || ev.kind === 'ospf') {
+    if (this.pingJob?.kind === 'trace' && this.pingJob.waiting && (ev.kind === 'exceed' || ev.kind === 'deliver')) {
+      const hop = this.pingJob.hop;
+      if (ev.kind === 'exceed') {
+        const m = ev.msg.match(/time exceeded from ([\d.]+)/);
+        if (!m) return;
+        this.write(`${hop}  ${m[1]}\n`, 'ok');
+        this.pingJob.waiting = false;
+        this.pingJob.hop++;
+        if (this.pingJob.hop > this.pingJob.max) {
+          this.write('traceroute complete\n', 'dim');
+          this.pingJob = null;
+        }
+        return;
+      }
+      const m = ev.msg.match(/reply from ([\d.]+)/);
+      if (!m) return;
+      this.write(`${hop}  ${m[1]}\n`, 'ok');
+      this.write('traceroute complete\n', 'dim');
+      this.pingJob = null;
+      return;
+    }
+    if (ev.kind === 'dhcp' || ev.kind === 'dns' || ev.kind === 'tcp' || ev.kind === 'http' || ev.kind === 'udp' || ev.kind === 'ospf' || ev.kind === 'exceed') {
       const msg = ev.msg.replace(/^[^:]+:\s*/, '');
       const bad = /fail|timeout|closed|NXDOMAIN|unreachable/i.test(msg);
       this.write(msg + '\n', bad ? 'err' : 'ok');

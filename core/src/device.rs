@@ -117,6 +117,8 @@ pub struct Device {
     pub dhcp: Option<crate::services::DhcpClient>,
     pub flows: Vec<crate::services::Flow>,
     pub nat: Vec<crate::services::NatEnt>,
+    /// 1:1 maps (proto 0) and static port forwards (tcp/udp).
+    pub static_nat: Vec<crate::services::StaticNat>,
 }
 
 impl Device {
@@ -162,6 +164,7 @@ impl Device {
             dhcp: None,
             flows: Vec::new(),
             nat: Vec::new(),
+            static_nat: Vec::new(),
             acls: Vec::new(),
             ospf: crate::ospf::Ospf::default(),
         }
@@ -437,7 +440,7 @@ impl Device {
         if frame.dst_mac != port_mac && frame.dst_mac != BROADCAST_MAC && !(self.kind == DeviceKind::Router && ip_mcast) {
             return; // not addressed to us
         }
-        if matches!(frame.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::Raw { ethertype: 0x0800 })
+        if matches!(frame.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded | Payload::Raw { ethertype: 0x0800 })
             && !ip_allowed(self, self.ports[in_port].in_acl, &frame)
         {
             events.push(SimEvent::new(
@@ -537,6 +540,21 @@ impl Device {
                 }
             }
             Payload::Raw { .. } => {}
+            Payload::IcmpTimeExceeded => {
+                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                    self.forward(frame, Some(in_port), tick, events);
+                } else if self.owns_ip(frame.dst_ip) {
+                    events.push(SimEvent::new(
+                        tick,
+                        Some(self.id),
+                        None,
+                        "exceed",
+                        format!("{}: time exceeded from {}", self.name, ip_str(frame.src_ip)),
+                    ));
+                } else if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
+                    self.forward(frame, Some(in_port), tick, events);
+                }
+            }
             Payload::IcmpEchoReply => {
                 if crate::services::nat_ingress(self, &mut frame, in_port) {
                     self.forward(frame, Some(in_port), tick, events);
@@ -563,6 +581,22 @@ impl Device {
     fn forward(&mut self, mut frame: Frame, in_port: Option<usize>, tick: u64, events: &mut Vec<SimEvent>) {
         frame.ttl = frame.ttl.saturating_sub(1);
         if frame.ttl == 0 {
+            if let Some(port) = in_port {
+                if let Some((src, _)) = self.ports.get(port).and_then(|p| p.ip) {
+                    let exceeded = Frame {
+                        src_mac: 0,
+                        dst_mac: 0,
+                        src_ip: src,
+                        dst_ip: frame.src_ip,
+                        ttl: 64,
+                        payload: Payload::IcmpTimeExceeded,
+                        raw: None,
+                        icmp_echo: None,
+                        vlan: 0,
+                    };
+                    self.emit_ip(exceeded, tick, events);
+                }
+            }
             events.push(SimEvent::new(
                 tick,
                 Some(self.id),
@@ -645,7 +679,7 @@ fn l4_of(frame: &Frame) -> (u8, u16, u16) {
         }
     }
     match frame.payload {
-        Payload::IcmpEchoRequest | Payload::IcmpEchoReply => (1, 0, 0),
+        Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => (1, 0, 0),
         _ => (0, 0, 0),
     }
 }

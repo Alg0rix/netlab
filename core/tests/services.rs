@@ -235,3 +235,90 @@ fn ospf_installs_a_remote_prefix_and_static_wins() {
     let msgs = run(&mut t, 30);
     assert!(msgs.iter().all(|m| !m.contains("reply from 10.1.0.1")), "static should beat OSPF\n{}", msgs.join("\n"));
 }
+
+fn nat_lab() -> (Topology, u32, u32, u32, u32) {
+    let mut t = Topology::new();
+    let pc = t.add_device(DeviceKind::Host, "PC".into(), 0.0, 0.0);
+    let web = t.add_device(DeviceKind::Host, "Web".into(), 0.0, 0.0);
+    let sw = t.add_device(DeviceKind::Switch, "SW".into(), 0.0, 0.0);
+    let r = t.add_device(DeviceKind::Router, "R1".into(), 0.0, 0.0);
+    let wan = t.add_device(DeviceKind::Host, "WAN".into(), 0.0, 0.0);
+    t.add_link_ports(pc, 0, sw, 0);
+    t.add_link_ports(web, 0, sw, 1);
+    t.add_link_ports(sw, 2, r, 0);
+    t.add_link_ports(r, 1, wan, 0);
+    t.set_ip(pc, 0, "10.0.0.2", "255.255.255.0");
+    t.set_gateway(pc, "10.0.0.1");
+    t.set_ip(web, 0, "10.0.0.10", "255.255.255.0");
+    t.set_gateway(web, "10.0.0.1");
+    t.set_services(web, false, false, true);
+    t.set_ip(r, 0, "10.0.0.1", "255.255.255.0");
+    t.set_ip(r, 1, "203.0.113.1", "255.255.255.0");
+    t.set_ip(wan, 0, "203.0.113.2", "255.255.255.0");
+    t.set_gateway(wan, "203.0.113.1");
+    assert!(t.set_nat(r, 0, "inside"));
+    assert!(t.set_nat(r, 1, "outside"));
+    (t, pc, web, r, wan)
+}
+
+#[test]
+fn static_nat_makes_the_inside_host_answer_for_the_outside_address() {
+    let (mut t, pc, _web, r, wan) = nat_lab();
+    assert!(t.nat_static(r, "10.0.0.2", 0, 0, 0));
+    t.ping(wan, "203.0.113.1");
+    let msgs = run(&mut t, 80);
+    assert!(msgs.iter().any(|m| m.contains("PC: reply to 203.0.113.2")), "inside should answer\n{}", msgs.join("\n"));
+    assert!(msgs.iter().all(|m| !m.contains("R1: reply to")), "router should not answer\n{}", msgs.join("\n"));
+    assert!(msgs.iter().any(|m| m.contains("reply from 203.0.113.1")), "wan should see the outside address\n{}", msgs.join("\n"));
+    t.set_power(r, false);
+    let kept = t.snapshot().devices.into_iter().find(|d| d.id == r).unwrap().static_nat;
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].inside, "10.0.0.2");
+    let _ = pc;
+}
+
+#[test]
+fn port_forward_delivers_http_to_the_inside_server() {
+    let (mut t, _pc, _web, r, wan) = nat_lab();
+    assert!(t.nat_static(r, "10.0.0.10", 6, 80, 80));
+    assert!(t.http_get(wan, "203.0.113.1", 80));
+    let msgs = run(&mut t, 120);
+    assert!(msgs.iter().any(|m| m.contains("HTTP 200")), "port forward\n{}", msgs.join("\n"));
+    t.ping(wan, "203.0.113.1");
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("R1: reply to")), "port forward must leave ICMP on the router\n{}", msgs.join("\n"));
+}
+
+#[test]
+fn traceroute_names_each_hop_then_the_destination() {
+    let mut t = Topology::new();
+    let pc = t.add_device(DeviceKind::Host, "PC".into(), 0.0, 0.0);
+    let r1 = t.add_device(DeviceKind::Router, "R1".into(), 0.0, 0.0);
+    let r2 = t.add_device(DeviceKind::Router, "R2".into(), 0.0, 0.0);
+    let pc2 = t.add_device(DeviceKind::Host, "PC2".into(), 0.0, 0.0);
+    t.add_link_ports(pc, 0, r1, 0);
+    t.add_link_ports(r1, 1, r2, 0);
+    t.add_link_ports(r2, 1, pc2, 0);
+    t.set_ip(pc, 0, "10.1.0.2", "255.255.255.0");
+    t.set_gateway(pc, "10.1.0.1");
+    t.set_ip(r1, 0, "10.1.0.1", "255.255.255.0");
+    t.set_ip(r1, 1, "10.0.0.1", "255.255.255.252");
+    t.set_ip(r2, 0, "10.0.0.2", "255.255.255.252");
+    t.set_ip(r2, 1, "10.2.0.1", "255.255.255.0");
+    t.set_ip(pc2, 0, "10.2.0.2", "255.255.255.0");
+    t.set_gateway(pc2, "10.2.0.1");
+    t.add_route(r1, "10.2.0.0", "255.255.255.0", "10.0.0.2", 1);
+    t.add_route(r2, "10.1.0.0", "255.255.255.0", "10.0.0.1", 0);
+
+    assert!(t.ping_ttl(pc, "10.2.0.2", 1));
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("time exceeded from 10.1.0.1")), "ttl 1\n{}", msgs.join("\n"));
+
+    assert!(t.ping_ttl(pc, "10.2.0.2", 2));
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("time exceeded from 10.0.0.2")), "ttl 2\n{}", msgs.join("\n"));
+
+    assert!(t.ping_ttl(pc, "10.2.0.2", 3));
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("reply from 10.2.0.2")), "ttl 3\n{}", msgs.join("\n"));
+}

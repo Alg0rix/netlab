@@ -62,6 +62,15 @@ pub struct DeviceSnap {
     pub svc_dns: bool,
     pub svc_http: bool,
     pub dns_records: Vec<(String, String)>,
+    pub static_nat: Vec<StaticNatSnap>,
+}
+
+#[derive(Serialize)]
+pub struct StaticNatSnap {
+    pub proto: u8,
+    pub inside: String,
+    pub inside_port: u16,
+    pub outside_port: u16,
 }
 
 #[derive(Serialize)]
@@ -392,6 +401,14 @@ impl Topology {
 
     /// Start an ICMP echo from `src` (a host or router) to `dst_ip`.
     pub fn ping(&mut self, src: DeviceId, dst_ip: &str) -> bool {
+        self.ping_ttl(src, dst_ip, 64)
+    }
+
+    /// ICMP echo with an explicit TTL. Traceroute sends these one hop at a time.
+    pub fn ping_ttl(&mut self, src: DeviceId, dst_ip: &str, ttl: u8) -> bool {
+        if ttl == 0 {
+            return false;
+        }
         let Some(dst) = parse_ip(dst_ip) else { return false };
         let Some(d) = self.devices.get_mut(&src) else { return false };
         if !d.powered {
@@ -402,10 +419,11 @@ impl Topology {
             dst_mac: 0,
             src_ip: [0, 0, 0, 0],
             dst_ip: dst,
-            ttl: 64,
+            ttl,
             payload: Payload::IcmpEchoRequest,
-                raw: None,
-                icmp_echo: None, vlan: 0,
+            raw: None,
+            icmp_echo: None,
+            vlan: 0,
         };
         d.emit_ip(frame, self.tick, &mut self.events);
         true
@@ -662,6 +680,48 @@ impl Topology {
         true
     }
 
+    /// `proto` 0 is 1:1 (one map per router). 6 or 17 is a static port forward.
+    pub fn nat_static(&mut self, dev: DeviceId, inside: &str, proto: u8, inside_port: u16, outside_port: u16) -> bool {
+        let Some(ip) = parse_ip(inside) else { return false };
+        if proto != 0 && proto != 6 && proto != 17 {
+            return false;
+        }
+        if proto != 0 && (inside_port == 0 || outside_port == 0) {
+            return false;
+        }
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        if proto == 0 {
+            d.static_nat.retain(|s| s.proto != 0);
+            d.static_nat.push(crate::services::StaticNat {
+                proto: 0,
+                inside_ip: ip,
+                inside_port: 0,
+                outside_port: 0,
+            });
+        } else {
+            d.static_nat.retain(|s| !(s.proto == proto && s.outside_port == outside_port));
+            d.static_nat.push(crate::services::StaticNat {
+                proto,
+                inside_ip: ip,
+                inside_port,
+                outside_port,
+            });
+        }
+        true
+    }
+
+    pub fn nat_static_clear(&mut self, dev: DeviceId, inside: &str, proto: u8, outside_port: u16) -> bool {
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        let before = d.static_nat.len();
+        if proto == 0 {
+            let Some(ip) = parse_ip(inside) else { return false };
+            d.static_nat.retain(|s| !(s.proto == 0 && s.inside_ip == ip));
+        } else {
+            d.static_nat.retain(|s| !(s.proto == proto && s.outside_port == outside_port));
+        }
+        d.static_nat.len() != before
+    }
+
     /// Inject real wire bytes from an emulated node into ext device `dev`
     /// port `port`; decoded frame is queued onto that port's link.
     pub fn ext_inject(&mut self, dev: DeviceId, port: usize, bytes: &[u8]) {
@@ -891,6 +951,12 @@ impl Topology {
                 svc_dns: d.svc_dns,
                 svc_http: d.svc_http,
                 dns_records: d.dns_records.iter().map(|(n, ip)| (n.clone(), ip_str(*ip))).collect(),
+                static_nat: d.static_nat.iter().map(|s| StaticNatSnap {
+                    proto: s.proto,
+                    inside: ip_str(s.inside_ip),
+                    inside_port: s.inside_port,
+                    outside_port: s.outside_port,
+                }).collect(),
             })
             .collect();
         let links = self

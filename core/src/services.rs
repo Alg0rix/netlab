@@ -57,6 +57,16 @@ pub struct NatEnt {
     pub peer_port: u16,
 }
 
+/// proto 0 is a 1:1 map of every protocol. proto 6 or 17 is one static port forward.
+/// The outside address is always the single outside interface.
+#[derive(Clone, Debug)]
+pub struct StaticNat {
+    pub proto: u8,
+    pub inside_ip: [u8; 4],
+    pub inside_port: u16,
+    pub outside_port: u16,
+}
+
 pub fn poll(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
     if let Some(c) = dev.dhcp.as_ref() {
         if c.state < ST_BOUND && tick >= c.next && dev.powered {
@@ -269,33 +279,52 @@ pub fn nat_ingress(dev: &mut Device, frame: &mut Frame, in_port: usize) -> bool 
     if frame.dst_ip != outside_ip {
         return false;
     }
-    let (proto, sport, dport, icmp_id) = l4_tuple(frame);
-    if proto == 0 {
-        return false;
-    }
-    let key_port = if proto == 1 { icmp_id } else { dport };
-    let peer_port = if proto == 1 { 0 } else { sport };
-    let ent = dev.nat.iter().find(|e| {
-        e.proto == proto && e.outside_port == key_port && e.peer_ip == frame.src_ip && e.peer_port == peer_port
-    });
-    let Some(ent) = ent.cloned() else { return false };
-    frame.dst_ip = ent.inside_ip;
-    if let Some(raw) = frame.raw.as_mut() {
-        if proto == 1 {
-            eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, Some(ent.inside_port));
-        } else {
-            eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, Some(ent.inside_port), None);
+    let (proto, _sport, dport, icmp_id) = l4_tuple(frame);
+    if proto == 6 || proto == 17 {
+        if let Some(map) = dev.static_nat.iter().find(|s| s.proto == proto && s.outside_port == dport).cloned() {
+            frame.dst_ip = map.inside_ip;
+            if let Some(raw) = frame.raw.as_mut() {
+                eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, Some(map.inside_port), None);
+            }
+            return true;
         }
-    } else if proto == 1 {
-        let id = ent.inside_port.to_be_bytes();
-        let mut echo = frame.icmp_echo.clone().unwrap_or_else(|| vec![0, 0, 0, 1]);
-        if echo.len() >= 2 {
-            echo[0] = id[0];
-            echo[1] = id[1];
-        }
-        frame.icmp_echo = Some(echo);
     }
-    true
+    if proto != 0 {
+        let key_port = if proto == 1 { icmp_id } else { dport };
+        let peer_port = if proto == 1 { 0 } else { _sport };
+        if let Some(ent) = dev
+            .nat
+            .iter()
+            .find(|e| e.proto == proto && e.outside_port == key_port && e.peer_ip == frame.src_ip && e.peer_port == peer_port)
+            .cloned()
+        {
+            frame.dst_ip = ent.inside_ip;
+            if let Some(raw) = frame.raw.as_mut() {
+                if proto == 1 {
+                    eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, Some(ent.inside_port));
+                } else {
+                    eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, Some(ent.inside_port), None);
+                }
+            } else if proto == 1 {
+                let id = ent.inside_port.to_be_bytes();
+                let mut echo = frame.icmp_echo.clone().unwrap_or_else(|| vec![0, 0, 0, 1]);
+                if echo.len() >= 2 {
+                    echo[0] = id[0];
+                    echo[1] = id[1];
+                }
+                frame.icmp_echo = Some(echo);
+            }
+            return true;
+        }
+    }
+    if let Some(map) = dev.static_nat.iter().find(|s| s.proto == 0).cloned() {
+        frame.dst_ip = map.inside_ip;
+        if let Some(raw) = frame.raw.as_mut() {
+            eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
+        }
+        return true;
+    }
+    false
 }
 
 /// Masquerade packets that are about to leave via an outside interface.
@@ -321,22 +350,49 @@ pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>) {
     }
     let Some((outside_ip, _)) = dev.ports[out].ip else { return };
     let (proto, sport, dport, icmp_id) = l4_tuple(frame);
+    if dev.static_nat.iter().any(|s| s.proto == 0 && s.inside_ip == frame.src_ip) {
+        frame.src_ip = outside_ip;
+        if let Some(raw) = frame.raw.as_mut() {
+            eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
+        }
+        return;
+    }
+    if proto == 6 || proto == 17 {
+        if let Some(map) = dev
+            .static_nat
+            .iter()
+            .find(|s| s.proto == proto && s.inside_ip == frame.src_ip && s.inside_port == sport)
+            .cloned()
+        {
+            frame.src_ip = outside_ip;
+            if let Some(raw) = frame.raw.as_mut() {
+                eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, Some(map.outside_port), None, None);
+            }
+            return;
+        }
+    }
     if proto != 1 && proto != 6 && proto != 17 {
         return;
     }
     let inside_port = if proto == 1 { icmp_id } else { sport };
     let peer_port = if proto == 1 { 0 } else { dport };
     let mut outside_port = inside_port;
-    let clash = dev.nat.iter().any(|e| {
-        e.proto == proto
-            && e.outside_port == outside_port
-            && e.peer_ip == frame.dst_ip
-            && e.peer_port == peer_port
-            && e.inside_ip != frame.src_ip
-    });
-    if clash {
+    let taken = |dev: &Device, outside_port: u16| {
+        dev.static_nat.iter().any(|s| s.proto == proto && s.outside_port == outside_port)
+            || dev.nat.iter().any(|e| {
+                e.proto == proto
+                    && e.outside_port == outside_port
+                    && e.peer_ip == frame.dst_ip
+                    && e.peer_port == peer_port
+                    && e.inside_ip != frame.src_ip
+            })
+    };
+    if taken(dev, outside_port) {
         outside_port = 40_000 + (dev.ip_id % 20_000) as u16;
         dev.ip_id = dev.ip_id.wrapping_add(1);
+        if taken(dev, outside_port) {
+            outside_port = outside_port.wrapping_add(1);
+        }
     }
     dev.nat.retain(|e| {
         !(e.proto == proto && e.inside_ip == frame.src_ip && e.inside_port == inside_port && e.peer_ip == frame.dst_ip && e.peer_port == peer_port)
@@ -1120,7 +1176,7 @@ fn l4_tuple(frame: &Frame) -> (u8, u16, u16, u16) {
         }
     }
     match frame.payload {
-        Payload::IcmpEchoRequest | Payload::IcmpEchoReply => {
+        Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => {
             let id = frame.icmp_echo.as_ref().filter(|e| e.len() >= 2).map(|e| u16::from_be_bytes([e[0], e[1]])).unwrap_or(0);
             (1, 0, 0, id)
         }

@@ -1543,6 +1543,165 @@ export const BUILTIN_TEMPLATES = [
       ],
     }),
   },
+
+  {
+    id: 'vlan-access-trunk',
+    title: 'Access VLANs and an 802.1Q Trunk',
+    level: 'intermediate',
+    category: 'Switching',
+    summary: 'Two simulated switches. VLAN 10 reaches across the trunk. VLAN 20 stays on SW1.',
+    tags: ['802.1Q', 'Access', 'Trunk', 'VLAN'],
+    objectives: [
+      'From A (`10.10.10.1`) ping B (`10.10.10.2`). Both access ports are VLAN 10, and the link between the switches is a trunk.',
+      'From A ping C (`10.10.20.1`). C is access VLAN 20, so the frame is dropped.',
+      'Select SW1 and read the VLAN table: e0 and e1 are access, e2 is a trunk.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'VLAN Access and Trunk',
+      nodes: [
+        N(1, 'pc', 'A', 80, 160, [ip('10.10.10.1')]),
+        N(2, 'pc', 'C', 80, 360, [ip('10.10.20.1')]),
+        N(3, 'switch', 'SW1', 300, 260, [{ access_vlan: 10 }, { access_vlan: 20 }, { trunk: true }]),
+        N(4, 'switch', 'SW2', 560, 180, [{ trunk: true }, { access_vlan: 10 }]),
+        N(5, 'pc', 'B', 780, 180, [ip('10.10.10.2')]),
+      ],
+      links: [
+        L(1, 0, 3, 0),
+        L(2, 0, 3, 1),
+        L(3, 2, 4, 0),
+        L(4, 1, 5, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 40, 90, 220, 160, '#4c9bff', 'VLAN 10'),
+        S(2, 'rect', 40, 290, 220, 150, '#3ccf7e', 'VLAN 20'),
+        S(3, 'rect', 680, 100, 200, 170, '#4c9bff', 'VLAN 10'),
+      ],
+      notes: [
+        { id: 1, x: 300, y: 40, text: 'Simulated 802.1Q\n• A ping 10.10.10.2 succeeds\n• A ping 10.10.20.1 fails\n• Capture the trunk to see the VLAN 10 tag' },
+      ],
+    }),
+  },
+
+  {
+    id: 'dhcp-relay',
+    title: 'DHCP Relay Across a Router',
+    level: 'intermediate',
+    category: 'Services',
+    summary: 'A PC with no address reaches a DHCP server on the far side of a router via ip helper-address.',
+    tags: ['DHCP', 'Relay', 'Helper'],
+    objectives: [
+      'Start PC1. Its startup script sends `ip dhcp`.',
+      'Watch R1 relay the Discover to Server (`10.2.0.10`) with giaddr `10.1.0.1`.',
+      'PC1 should lease `10.1.0.10`. Run `show ip` to confirm.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'DHCP Relay',
+      nodes: [
+        N(1, 'pc', 'PC1', 120, 240, [], [], { powered: false, startup: 'ip dhcp', startupBoot: true }),
+        N(2, 'router', 'R1', 400, 240, [
+          { ...ip('10.1.0.1'), helper: '10.2.0.10' },
+          ip('10.2.0.1'),
+        ]),
+        N(3, 'server', 'Server', 680, 240, [ip('10.2.0.10')], gw('10.2.0.1'), { svc: { dhcp: true } }),
+      ],
+      links: [
+        L(1, 0, 2, 0),
+        L(2, 1, 3, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 40, 150, 240, 180, '#4c9bff', '10.1.0.0/24'),
+        S(2, 'rect', 560, 150, 240, 180, '#f2b84b', '10.2.0.0/24'),
+      ],
+      notes: [
+        { id: 1, x: 250, y: 60, text: 'DHCP relay\n• Start PC1 (Apply on start runs ip dhcp)\n• Or open PC1 and type: ip dhcp\n• Server pool is the giaddr subnet' },
+      ],
+    }),
+  },
+
+  {
+    id: 'ospf-two-routers',
+    title: 'Two Routers, One OSPF Area',
+    level: 'intermediate',
+    category: 'Routing',
+    summary: 'R1 and R2 learn each other\'s LANs with simplified OSPFv2. A static route of the same length still wins.',
+    tags: ['OSPF', 'Area 0', 'Static'],
+    objectives: [
+      'Select R1 and run `show ip ospf`, then `show ip route`. The 10.2.0.0/24 route is learned (O).',
+      'From PC1 ping `10.2.0.10`.',
+      'On R1, `ip route 10.2.0.0/24 10.0.0.2` and look again: the static route replaces the OSPF route of the same length.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'Two-Router OSPF',
+      nodes: [
+        N(1, 'pc', 'PC1', 80, 240, [ip('10.1.0.10')], gw('10.1.0.1')),
+        N(2, 'router', 'R1', 320, 240, [ip('10.1.0.1'), ip('10.0.0.1', 30)], [], {
+          ospf: { nets: [{ prefix: '10.0.0.0', wild: '0.255.255.255', area: 0 }] },
+        }),
+        N(3, 'router', 'R2', 560, 240, [ip('10.0.0.2', 30), ip('10.2.0.1')], [], {
+          ospf: { nets: [{ prefix: '10.0.0.0', wild: '0.255.255.255', area: 0 }] },
+        }),
+        N(4, 'pc', 'PC2', 800, 240, [ip('10.2.0.10')], gw('10.2.0.1')),
+      ],
+      links: [
+        L(1, 0, 2, 0),
+        L(2, 1, 3, 0),
+        L(3, 1, 4, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 40, 150, 200, 180, '#4c9bff', '10.1.0.0/24'),
+        S(2, 'rect', 280, 150, 320, 180, '#a58bff', '10.0.0.0/30 · area 0'),
+        S(3, 'rect', 680, 150, 220, 180, '#3ccf7e', '10.2.0.0/24'),
+      ],
+      notes: [
+        { id: 1, x: 280, y: 40, text: 'Simplified OSPFv2 (not an IOS packet)\n• PC1: ping 10.2.0.10\n• R1: show ip route\n• Hellos stay on the link' },
+      ],
+    }),
+  },
+
+  {
+    id: 'static-nat-forward',
+    title: 'Static NAT and a Port Forward',
+    level: 'intermediate',
+    category: 'NAT',
+    summary: 'One outside address. PC1 is a 1:1 map. TCP 80 on that address reaches the inside web server.',
+    tags: ['NAT', 'Static', 'Port Forward', 'HTTP'],
+    objectives: [
+      'From WAN ping `203.0.113.1`. PC1 answers, because the 1:1 map owns that address.',
+      'From WAN run `curl 203.0.113.1 80`. The port forward delivers it to Web.',
+      'On R1 run `show ip nat` and `show running-config` to see both maps.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'Static NAT and Port Forward',
+      nodes: [
+        N(1, 'pc', 'PC1', 80, 160, [ip('10.0.0.2')], gw('10.0.0.1')),
+        N(2, 'server', 'Web', 80, 360, [ip('10.0.0.10')], gw('10.0.0.1'), { svc: { http: true } }),
+        N(3, 'switch', 'SW1', 300, 260),
+        N(4, 'router', 'R1', 540, 260, [
+          { ...ip('10.0.0.1'), nat: 'inside' },
+          { ...ip('203.0.113.1'), nat: 'outside' },
+        ], [], {
+          static_nat: [
+            { inside: '10.0.0.2', proto: 0, inside_port: 0, outside_port: 0 },
+            { inside: '10.0.0.10', proto: 6, inside_port: 80, outside_port: 80 },
+          ],
+        }),
+        N(5, 'pc', 'WAN', 800, 260, [ip('203.0.113.2')], gw('203.0.113.1')),
+      ],
+      links: [
+        L(1, 0, 3, 0),
+        L(2, 0, 3, 1),
+        L(3, 2, 4, 0),
+        L(4, 1, 5, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 30, 90, 400, 340, '#4c9bff', 'Inside · 10.0.0.0/24'),
+        S(2, 'rect', 700, 160, 200, 200, '#f2b84b', '203.0.113.0/24'),
+      ],
+      notes: [
+        { id: 1, x: 460, y: 40, text: 'Static NAT\n• WAN: ping 203.0.113.1  (PC1 answers)\n• WAN: curl 203.0.113.1 80  (Web answers)\n• 1:1 uses the outside interface address' },
+      ],
+    }),
+  },
 ];
 
 export const userTemplates = {

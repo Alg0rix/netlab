@@ -189,6 +189,7 @@ function serialize() {
       svc: { dhcp: !!d.svc_dhcp, dns: !!d.svc_dns, http: !!d.svc_http },
       resolver: d.resolver || '',
       dns: d.dns_records || [],
+      static_nat: d.static_nat || [],
     })),
     links: snap.links.map(l => ({
       a: l.a, ap: l.a_port, b: l.b, bp: l.b_port, up: l.up,
@@ -244,6 +245,10 @@ function restore(data) {
       if (p.ospf_area != null) lab.ospf_interface(id, i, p.ospf_area);
     });
     for (const net of n.ospf?.nets ?? []) lab.ospf_network(id, net.prefix, net.wild, net.area || 0);
+    for (const s of n.static_nat ?? []) {
+      const proto = s.proto === 6 || s.proto === 'tcp' ? 'tcp' : s.proto === 17 || s.proto === 'udp' ? 'udp' : 'ip';
+      lab.nat_static(id, s.inside, proto, s.inside_port || 0, s.outside_port || 0);
+    }
     if (n.svc) lab.set_services(id, !!n.svc.dhcp, !!n.svc.dns, !!n.svc.http);
     for (const rec of n.dns ?? []) if (rec?.[0] && rec?.[1]) lab.add_dns_record(id, rec[0], rec[1]);
     if (n.resolver) lab.set_dns(id, n.resolver);
@@ -593,7 +598,7 @@ function setCapture(id, on) {
 function catOf(ev) {
   switch (ev.kind) {
     case 'arp_req': case 'arp_rep': return 'ARP';
-    case 'echo_req': case 'echo_rep': case 'deliver': return 'ICMP';
+    case 'echo_req': case 'echo_rep': case 'deliver': case 'exceed': return 'ICMP';
     case 'learn': case 'flood': case 'forward': return 'L2';
     case 'dhcp': case 'dns': case 'tcp': case 'http': case 'udp': return 'L4';
     case 'ext_tx': case 'ext_rx': return 'EXT';
@@ -2410,11 +2415,26 @@ function servicesSection(id, d) {
   return s;
 }
 
+function natProtoName(proto) {
+  return proto === 6 || proto === 'tcp' ? 'tcp' : proto === 17 || proto === 'udp' ? 'udp' : 'ip';
+}
+
 function natSection(id, d) {
   const n = portCount(id);
+  const maps = d.static_nat || [];
   const s = h(`<div class="sect"><h4>NAT</h4>
-    <p class="muted" style="margin:0 0 8px;font-size:12px">Inside hosts are masqueraded out of the outside interface. One outside port. With an outside and no explicit inside, every other port is inside.</p>
-    <table class="iftable"><tbody></tbody></table></div>`);
+    <p class="muted" style="margin:0 0 8px;font-size:12px">Inside hosts are masqueraded out of the outside interface. One outside port. A 1:1 map sends every new packet for that outside address to one inside host. A port forward does not.</p>
+    <table class="iftable"><tbody></tbody></table>
+    <div class="row" style="margin-top:8px"><input class="field" data-static placeholder="10.0.0.2" spellcheck="false" /><button class="btn sm" data-add-static>1:1</button></div>
+    <div class="row" style="margin-top:6px">
+      <select class="field" data-l4><option>tcp</option><option>udp</option></select>
+      <input class="field" data-iip placeholder="inside ip" spellcheck="false" />
+      <input class="field" data-inn placeholder="80" spellcheck="false" style="width:64px" />
+      <input class="field" data-out placeholder="80" spellcheck="false" style="width:64px" />
+      <button class="btn sm" data-add-pf>forward</button>
+    </div>
+    <ul class="routes"></ul>
+  </div>`);
   const tb = $('tbody', s);
   for (let i = 0; i < n; i++) {
     const role = d.ports[i].nat || '';
@@ -2430,6 +2450,36 @@ function natSection(id, d) {
     };
     tb.append(tr);
   }
+  const list = $('ul', s);
+  for (const m of maps) {
+    const label = !m.proto ? `1:1 ${m.inside}` : `${natProtoName(m.proto)} ${m.inside}:${m.inside_port} → outside:${m.outside_port}`;
+    const li = h(`<li><span>${esc(label)}</span><button class="btn sm" data-x>remove</button></li>`);
+    $('[data-x]', li).onclick = () => {
+      checkpoint();
+      lab.nat_static_clear(id, m.inside || '', natProtoName(m.proto), m.outside_port || 0);
+      refresh(); dirty(); renderInspector(true);
+    };
+    list.append(li);
+  }
+  $('[data-add-static]', s).onclick = () => {
+    const ip = $('[data-static]', s).value.trim();
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return toast('1:1 needs an inside IPv4 address', 'err');
+    checkpoint();
+    if (!lab.nat_static(id, ip, 'ip', 0, 0)) return toast('static map was not added', 'err');
+    refresh(); dirty(); renderInspector(true);
+  };
+  $('[data-add-pf]', s).onclick = () => {
+    const proto = $('[data-l4]', s).value;
+    const ip = $('[data-iip]', s).value.trim();
+    const inn = +$('[data-inn]', s).value;
+    const out = +$('[data-out]', s).value;
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !(inn > 0 && inn < 65536) || !(out > 0 && out < 65536)) {
+      return toast('port forward needs an inside address and two ports', 'err');
+    }
+    checkpoint();
+    if (!lab.nat_static(id, ip, proto, inn, out)) return toast('port forward was not added', 'err');
+    refresh(); dirty(); renderInspector(true);
+  };
   return s;
 }
 

@@ -109,6 +109,7 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
                 f.payload = match icmp[0] {
                     8 => Payload::IcmpEchoRequest,
                     0 => Payload::IcmpEchoReply,
+                    11 => Payload::IcmpTimeExceeded,
                     _ => f.payload,
                 };
                 if matches!(f.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply) && icmp.len() >= 8 {
@@ -206,10 +207,14 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
                 _ => out.extend_from_slice(&f.dst_ip),
             }
         }
-        Payload::IcmpEchoRequest | Payload::IcmpEchoReply => {
+        Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => {
             out.extend_from_slice(&0x0800u16.to_be_bytes());
             // ICMP: type code cksum id seq
-            let ty: u8 = if matches!(f.payload, Payload::IcmpEchoRequest) { 8 } else { 0 };
+            let ty: u8 = match f.payload {
+                Payload::IcmpEchoRequest => 8,
+                Payload::IcmpTimeExceeded => 11,
+                _ => 0,
+            };
             let mut icmp = vec![ty, 0, 0, 0];
             icmp.extend_from_slice(f.icmp_echo.as_deref().unwrap_or(&[0, 0, 0, 1]));
             let c = cksum(&icmp);

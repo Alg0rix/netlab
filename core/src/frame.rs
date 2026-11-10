@@ -8,6 +8,7 @@ pub const BROADCAST_MAC: u64 = 0xFF_FF_FF_FF_FF_FF;
 pub enum Payload {
     IcmpEchoRequest,
     IcmpEchoReply,
+    IcmpTimeExceeded,
     ArpRequest { target_ip: [u8; 4] },
     ArpReply { target_ip: [u8; 4] },
     /// Real Ethernet payload we don't model (kept verbatim in `Frame::raw`).
@@ -46,6 +47,9 @@ impl Frame {
             Payload::IcmpEchoReply => {
                 format!("ICMP reply {} > {}", ip_str(self.src_ip), ip_str(self.dst_ip))
             }
+            Payload::IcmpTimeExceeded => {
+                format!("ICMP time exceeded {} > {}", ip_str(self.src_ip), ip_str(self.dst_ip))
+            }
             Payload::ArpRequest { target_ip } => {
                 format!("ARP who-has {}", ip_str(target_ip))
             }
@@ -65,7 +69,7 @@ impl Frame {
     /// Dot colour key for the UI.
     pub fn color_key(&self) -> &'static str {
         match self.payload {
-            Payload::IcmpEchoRequest | Payload::IcmpEchoReply => "icmp",
+            Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => "icmp",
             Payload::ArpRequest { .. } | Payload::ArpReply { .. } => "arp",
             Payload::Raw { .. } => self.raw.as_deref().map(crate::eth::l4_color).unwrap_or("raw"),
         }

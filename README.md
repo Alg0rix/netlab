@@ -22,10 +22,10 @@ No backend server, local agent, or cloud VM is required. Operating system images
 - **Multi-Ethernet Interface Support**
   - Configure multi-homed hosts, bastion servers, routers, switches, and emulated VMs directly from the Inspector (**`+ Add`** / **`- Remove`** interface buttons).
   - Supports up to **8 NICs** on End Hosts (`eth0`–`eth7`), Routers (`g0/0`–`g0/7`), Cisco 7200 (`f0/0`–`f6/0`, `f0/1`), MikroTik RouterOS & CRS Switch (`ether1`–`ether8`), Open vSwitch & x86 VMs (`eth0`–`eth7`), and up to **16 ports** on Ethernet Switches (`e0`–`e15`) and Cisco Switches (`fa1/0`–`fa1/15`).
-- **Topology Template Marketplace (28 Curated Labs · Beginner → Expert)**
-  - Press **`T`** (or click **Templates** in the top bar) to browse **28 ready-to-run network topologies** with auto-generated SVG schematics, difficulty tabs (`Beginner`, `Intermediate`, `Advanced`, `Expert`), category & tag filters, and step-by-step lab objectives:
+- **Topology Template Marketplace (32 Curated Labs · Beginner → Expert)**
+  - Press **`T`** (or click **Templates** in the top bar) to browse **32 ready-to-run network topologies** with auto-generated SVG schematics, difficulty tabs (`Beginner`, `Intermediate`, `Advanced`, `Expert`), category & tag filters, and step-by-step lab objectives:
     - **Beginner (6):** Point-to-Point Ethernet, Switched LAN, Single-Router Subnets, Cascaded Switches, SOHO Home Gateway, CIDR/VLSM Subnetting.
-    - **Intermediate (7):** Branch Office (Cisco IOS Edge), Multi-Hop WAN Triangle, Multi-Homed DMZ Bastion, Hub-and-Spoke WAN, 5-Hop Traceroute Chain, Metro Fiber Ring, 3-Tier Microservices.
+    - **Intermediate (11):** Branch Office (Cisco IOS Edge), Multi-Hop WAN Triangle, Multi-Homed DMZ Bastion, Hub-and-Spoke WAN, 5-Hop Traceroute Chain, Metro Fiber Ring, 3-Tier Microservices, Access VLANs and an 802.1Q Trunk, DHCP Relay, Two-Router OSPF, Static NAT and a Port Forward.
     - **Advanced (8):** Campus 3-Tier Hierarchy, Dual-ISP Enterprise Edge, IXP 4-AS Peering Fabric, Industrial ICS/SCADA Purdue Model, Smart Hospital PACS/HL7 Campus, Multi-Region Anycast CDN, **Cisco Switch 802.1Q VLAN Trunking & PVST+**, **MikroTik CRS Bridge VLAN Filtering & RSTP**.
     - **Expert (7):** Leaf-Spine (Clos) Data Center, Multi-Vendor Emulation (Cisco IOS + RouterOS + x86 VM), 4-Region Full-Mesh ($K_4$) Core, Zero-Trust SOC Cyber Range (4-NIC SIEM), Carrier MPLS P/PE Core, AI/GPU Rail-Optimized Training Cluster, **Multi-Vendor Managed Switching Ring (Cisco Switch + MikroTik CRS + Open vSwitch)**.
   - Publish any custom canvas topology to **My Templates** (`localStorage`) or export as `.netlab.json`.
@@ -137,6 +137,7 @@ show ip                     Display IPv4 addresses, gateway, DNS, DHCP state, an
 show arp | arp              Display the ARP table
 show route                  Display the routing table
 ping <ip> [-c <count>]      Send ICMP echo requests
+traceroute <ip>             ICMP probes with TTL 1 through 8. A hop prints the router that sent time exceeded
 traffic <ip> tcp|udp|icmp <port> -c <n>
                             Send that many probes, spaced like ping
 hostname <name>             Rename the host
@@ -161,9 +162,17 @@ ip route <prefix/len> <next-hop> [if]
 no ip route <index>         Remove a static route by its index in `show ip route`
 ip nat inside|outside <if>  Source NAT. Inside hosts are masqueraded as the outside address.
                             With an outside port and no explicit inside, every other port is inside.
-show ip nat                 NAT role of each interface
+ip nat inside source static <inside-ip>
+                            1:1 map. New sessions to the outside interface address go to that inside host,
+                            including ping of the router address. One 1:1 map per router.
+ip nat inside source static tcp|udp <inside-ip> <inside-port> <outside-port>
+                            Static port forward. Does not take over the router's own ICMP.
+no ip nat inside source static <inside-ip>
+no ip nat inside source static tcp|udp <outside-port>
+show ip nat                 NAT role of each interface, plus static maps
 no ip nat <if>              Clear a NAT role
 ping <ip> [-c <count>]      Send ICMP echo requests from the device
+traceroute <ip>             ICMP probes with TTL 1 through 8
 traffic <ip> tcp|udp|icmp <port> -c <n>
                             Send that many probes, spaced like ping
 hostname <name>             Rename the device
@@ -240,7 +249,7 @@ netlab/
 │   └── WASM-PORT.md       # Technical write-up of the Dynamips WebAssembly port
 └── web/                   # Zero-build ES module frontend
     ├── main.js            # Canvas topology editor, simulation loop, inspector, marketplace UI
-    ├── templates.js       # 25 built-in topology templates (Beginner → Expert) + SVG previewer
+    ├── templates.js       # 32 built-in topology templates (Beginner → Expert) + SVG previewer
     ├── cli.js             # Interactive VPCS & router/switch CLI with Tab/? completion
     ├── capture.js         # Packet dissector, TCP stream follow, hex viewer, libpcap writer
     ├── labyaml.js         # .netlab.yaml emitter and parser for the subset netlab writes

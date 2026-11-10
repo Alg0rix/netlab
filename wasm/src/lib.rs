@@ -109,6 +109,11 @@ impl NetLab {
         self.topo.ping(src, dst_ip)
     }
 
+    /// ICMP echo with TTL. Used by traceroute.
+    pub fn probe_ttl(&mut self, src: u32, dst_ip: &str, ttl: u8) -> bool {
+        self.topo.ping_ttl(src, dst_ip, ttl)
+    }
+
     pub fn tick(&mut self) {
         self.topo.step();
     }
@@ -186,6 +191,27 @@ impl NetLab {
     /// role: "inside" | "outside" | "off"
     pub fn set_nat(&mut self, dev: u32, port: usize, role: &str) -> bool {
         self.topo.set_nat(dev, port, role)
+    }
+
+    /// `proto` is "ip" (1:1) or "tcp" / "udp" (static port forward).
+    pub fn nat_static(&mut self, dev: u32, inside: &str, proto: &str, inside_port: u16, outside_port: u16) -> bool {
+        let proto = match proto {
+            "tcp" => 6,
+            "udp" => 17,
+            "ip" | "" => 0,
+            _ => return false,
+        };
+        self.topo.nat_static(dev, inside, proto, inside_port, outside_port)
+    }
+
+    pub fn nat_static_clear(&mut self, dev: u32, inside: &str, proto: &str, outside_port: u16) -> bool {
+        let proto = match proto {
+            "tcp" => 6,
+            "udp" => 17,
+            "ip" | "" => 0,
+            _ => return false,
+        };
+        self.topo.nat_static_clear(dev, inside, proto, outside_port)
     }
 
     /// `mode` is "access" or "trunk". `allowed` is "" / "all" or "1,10,20".

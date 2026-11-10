@@ -57,6 +57,12 @@ export function emitLab(data) {
       out.push('    ospf:');
       for (const net of n.ospf.nets) out.push(`      - { prefix: ${net.prefix}, wild: ${net.wild}, area: ${net.area} }`);
     }
+    if (n.static_nat?.length) {
+      out.push('    static_nat:');
+      for (const s of n.static_nat) {
+        out.push(`      - { inside: ${s.inside}, proto: ${s.proto || 0}, inside_port: ${s.inside_port || 0}, outside_port: ${s.outside_port || 0} }`);
+      }
+    }
     if (n.acls?.length) {
       out.push('    acls:');
       for (const a of n.acls) {
@@ -145,7 +151,7 @@ export function parseLab(text) {
     }
     if (!raw.trim() || raw.trim().startsWith('#')) continue;
     const s = raw.trim();
-    if (s.startsWith('name:')) { lab.name = unquote(s.slice(5)) || 'lab'; continue; }
+    if (!node && s.startsWith('name:')) { lab.name = unquote(s.slice(5)) || 'lab'; continue; }
     if (s === 'nodes:' || s === 'links:') { node = null; acl = null; continue; }
     if (s.startsWith('- id:')) {
       node = { id: unquote(s.slice(5)), ports: [], routes: [], svc: {} };
@@ -176,7 +182,7 @@ export function parseLab(text) {
       else if (k === 'resolver') node.resolver = unquote(rest);
       else if (k === 'services') {
         for (const name of flowList(rest)) node.svc[name] = true;
-      } else if (k === 'ports' || k === 'routes' || k === 'ospf' || k === 'acls' || k === 'entries') {
+      } else if (k === 'ports' || k === 'routes' || k === 'ospf' || k === 'acls' || k === 'entries' || k === 'static_nat') {
         node._sec = k;
       }
       continue;
@@ -186,6 +192,8 @@ export function parseLab(text) {
       const o = brace(s.slice(1));
       if (o.prefix && o.wild != null && node._sec === 'ospf') {
         (node.ospf ??= { nets: [] }).nets.push({ prefix: o.prefix, wild: o.wild, area: +o.area || 0 });
+      } else if (node._sec === 'static_nat' && o.inside) {
+        (node.static_nat ??= []).push({ inside: o.inside, proto: +o.proto || 0, inside_port: +o.inside_port || 0, outside_port: +o.outside_port || 0 });
       } else if (o.prefix && o.next_hop) {
         node.routes.push({ prefix: o.prefix, mask: o.mask, next_hop: o.next_hop, out_port: +o.out_port || 0, proto: 'S' });
       } else if (o.permit != null && o.src) {
