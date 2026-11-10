@@ -6,6 +6,8 @@ No backend server, local agent, or cloud VM is required. Operating system images
 
 ![netlab running in the browser](docs/screenshot.png)
 
+🎬 **[Watch the 88-second showreel](docs/netlab-showreel.mp4)**: what netlab is, how it works, and a live demo. It is built entirely from code in [`promo/`](promo/).
+
 ---
 
 ## Features
