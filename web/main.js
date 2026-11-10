@@ -7,7 +7,7 @@ import { SimShell } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
 import { emitLab, parseLab } from './labyaml.js';
 import { toast, modal, confirmBox, ask, openMenu, closeMenu, ico, hydrateIcons } from './ui.js';
-import { openFloat, closeFloat, hasFloat } from './consolewin.js';
+import { addTab, activateTab, removeTab, hasTab, refreshTabs } from './consolewin.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
@@ -74,6 +74,7 @@ const caps = new Map();      // linkId -> { name, packets: [], paused }
 let capLink = null, capPkt = null, capSeq = 0;
 
 const consoles = new Map();  // devId -> { shell?, out, buf }
+const conPlace = new Map();  // devId -> 'dock' when its console lives in the bottom panel (absent = floating window)
 let dockTab = 'events';
 
 const flashes = [];          // { dev, color, t0 }
@@ -334,7 +335,7 @@ function registerNode(id, tplId, name, image = null, uid = null, vm = null, port
       ? `${byId.get(id)?.name}: browser storage is full — the VM disk could not be saved`
       : `${byId.get(id)?.name}: could not save the VM disk (${e?.message ?? e})`, 'err'));
     node.onState = st => {
-      renderTopo(); renderInspectorSoon(); renderDockTabs();
+      renderTopo(); renderInspectorSoon(); refreshTabs(); renderDockTabs();
       consoles.get(id)?.onState?.(st);
       pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${byId.get(id)?.name ?? name}: ${st === 'running' ? 'VM started' : st}` });
     };
@@ -359,7 +360,7 @@ function registerNode(id, tplId, name, image = null, uid = null, vm = null, port
     node.onFrame = (dev, port, bytes) => lab.ext_inject(dev, port, bytes);
     node.term = bytes => consoleWrite(id, bytes);
     node.onState = st => {
-      renderTopo(); renderInspectorSoon(); renderDockTabs();
+      renderTopo(); renderInspectorSoon(); refreshTabs(); renderDockTabs();
       consoles.get(id)?.onState?.(st);
       pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${byId.get(id)?.name ?? name}: ${st === 'running' ? 'Dynamips started' : st}` });
     };
@@ -2694,12 +2695,20 @@ function renderDockTabs() {
   const tabs = [
     { id: 'events', label: 'Events', n: events.length },
     { id: 'capture', label: 'Capture', n: [...caps.values()].reduce((s, c) => s + c.packets.length, 0), icon: 'capture' },
+    ...[...conPlace].filter(([id, p]) => p === 'dock' && byId.has(id)).map(([id]) => ({ id: 'con:' + id, label: byId.get(id).name, art: tplOf(id), dev: id })),
   ];
   el.innerHTML = '';
   for (const t of tabs) {
+    const st = t.dev != null ? nodeState(t.dev) : null;
     const b = h(`<button class="dtab ${dockTab === t.id ? 'on' : ''}" role="tab">
-      <span>${esc(t.label)}</span>${t.n != null ? `<span class="n">${t.n > 9999 ? '9999+' : t.n}</span>` : ''}</button>`);
-    b.onclick = () => showDock(t.id);
+      ${t.art ? `<span class="art">${iconSVG(t.art)}</span>` : ''}${st ? `<span class="dot ${st}" style="width:6px;height:6px;box-shadow:none"></span>` : ''}
+      <span>${esc(t.label)}</span>${t.n != null ? `<span class="n">${t.n > 9999 ? '9999+' : t.n}</span>` : ''}
+      ${t.dev != null ? `<span class="pop" title="Pop out to window">${ico('fit')}</span><span class="x" title="Close console">${ico('x')}</span>` : ''}</button>`);
+    b.onclick = e => {
+      if (e.target.closest('.x')) return closeConsole(t.dev);
+      if (e.target.closest('.pop')) return floatConsole(t.dev);
+      showDock(t.id);
+    };
     el.append(b);
   }
   el.append(h('<span class="spacer"></span>'));
@@ -2714,6 +2723,11 @@ function renderDockBody() {
   body.innerHTML = '';
   if (dockTab === 'events') body.append(eventsPane());
   else if (dockTab === 'capture') body.append(capturePane());
+  else if (dockTab.startsWith('con:')) {
+    const id = +dockTab.slice(4), c = consoles.get(id);
+    if (c && conPlace.get(id) === 'dock') { body.append(c.el); c.focus?.(); c.scroll?.(); }
+    else { dockTab = 'events'; renderDockBody(); return; }
+  }
   hydrateIcons(body);
 }
 
@@ -3013,21 +3027,39 @@ function openConsole(id) {
   if (!d) return;
   if (!consoles.has(id)) consoles.set(id, isVM(id) ? vmConsole(id) : d.kind === 'ext' ? iosConsole(id) : simConsole(id));
   const key = 'con:' + id;
-  if (hasFloat(key)) return openFloat(key, {});
-  const c = consoles.get(id);
-  openFloat(key, {
-    title: d.name, sub: tpl(tplOf(id))?.label ?? '', content: c.el,
-    onClose: () => closeConsole(id),
-    onFocus: () => c.focus?.(),   // any click in the window puts the keyboard in the terminal / VGA screen
-  });
-  c.focus?.();   // after the element is in the window, so the VM terminal can measure itself
-  c.scroll?.();
+  if (conPlace.get(id) === 'dock') return showDock(key);
+  if (hasTab(key)) return activateTab(key);
+  addTab(key, consoleTab(id));
+  consoles.get(id).scroll?.();
 }
-function closeConsole(id, silent) {
-  closeFloat('con:' + id);
-  if (!consoles.has(id)) return;
+/** A console as a floating-window tab; its element moves between the window and the bottom panel. */
+function consoleTab(id) {
+  const d = byId.get(id), c = consoles.get(id);
+  return {
+    label: d.name,
+    art: `<span class="art">${iconSVG(tplOf(id))}</span>`,
+    state: () => nodeState(id),
+    el: c.el,
+    focus: () => c.focus?.(),   // runs after the element is in the window, so the VM terminal can measure itself
+    onClose: () => closeConsole(id),
+    onDock: () => dockConsole(id),
+  };
+}
+function dockConsole(id) {
+  conPlace.set(id, 'dock');
+  showDock('con:' + id);
+}
+function floatConsole(id) {
+  conPlace.delete(id);
+  if (dockTab === 'con:' + id) dockTab = 'events';
+  renderDockTabs(); renderDockBody();
+  addTab('con:' + id, consoleTab(id));
+}
+function closeConsole(id) {
+  removeTab('con:' + id);
+  const wasDocked = conPlace.delete(id);
   consoles.delete(id);
-  if (!silent) renderDockTabs();
+  if (wasDocked) { if (dockTab === 'con:' + id) dockTab = 'events'; renderDockTabs(); renderDockBody(); }
 }
 
 function termShell() {
