@@ -7,6 +7,7 @@ import { SimShell } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
 import { emitLab, parseLab } from './labyaml.js';
 import { toast, modal, confirmBox, ask, openMenu, closeMenu, ico, hydrateIcons } from './ui.js';
+import { openFloat, closeFloat, hasFloat } from './consolewin.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
@@ -1871,7 +1872,19 @@ function imageManager(forDev = null) {
     let chosen = null;
     m._onclose = () => resolve(chosen);
     const list = $('.imglist', body);
-    const use = name => { meta.get(forDev).image = name; chosen = name; dirty(); renderInspector(true); m.close(); };
+    const use = async name => {
+      const node = forDev == null ? null : meta.get(forDev);
+      // an installed VM boots its own disk, so a new image only takes effect on a fresh disk
+      if (node && isVM(forDev) && node.diskSaved && name !== node.image) {
+        if (nodeState(forDev) !== 'stopped') return toast(`${byId.get(forDev)?.name}: stop the VM before changing its image`, 'err');
+        const ok = await confirmBox('Change image', `${byId.get(forDev)?.name} has an installed disk, which boots before any image. Using ${name} resets the disk: everything installed or configured inside the VM is lost.`, 'Reset disk', true);
+        if (!ok) return;
+        await disks.remove(node.uid);
+        node.diskSaved = null; node.diskSize = 0;
+      }
+      if (node) node.image = name;
+      chosen = name; dirty(); renderInspector(true); m.close();
+    };
     const draw = async () => {
       const all = (await images.list()).filter(im => !want || want.includes(im.kind));
       list.hidden = !all.length;
@@ -2681,19 +2694,12 @@ function renderDockTabs() {
   const tabs = [
     { id: 'events', label: 'Events', n: events.length },
     { id: 'capture', label: 'Capture', n: [...caps.values()].reduce((s, c) => s + c.packets.length, 0), icon: 'capture' },
-    ...[...consoles.keys()].filter(id => byId.has(id)).map(id => ({ id: 'con:' + id, label: byId.get(id).name, art: tplOf(id), dev: id })),
   ];
   el.innerHTML = '';
   for (const t of tabs) {
-    const st = t.dev != null ? nodeState(t.dev) : null;
     const b = h(`<button class="dtab ${dockTab === t.id ? 'on' : ''}" role="tab">
-      ${t.art ? `<span class="art">${iconSVG(t.art)}</span>` : ''}${st ? `<span class="dot ${st}" style="width:6px;height:6px;box-shadow:none"></span>` : ''}
-      <span>${esc(t.label)}</span>${t.n != null ? `<span class="n">${t.n > 9999 ? '9999+' : t.n}</span>` : ''}
-      ${t.dev != null ? `<span class="x" title="Close console">${ico('x')}</span>` : ''}</button>`);
-    b.onclick = e => {
-      if (e.target.closest('.x')) return closeConsole(t.dev);
-      showDock(t.id);
-    };
+      <span>${esc(t.label)}</span>${t.n != null ? `<span class="n">${t.n > 9999 ? '9999+' : t.n}</span>` : ''}</button>`);
+    b.onclick = () => showDock(t.id);
     el.append(b);
   }
   el.append(h('<span class="spacer"></span>'));
@@ -2708,12 +2714,6 @@ function renderDockBody() {
   body.innerHTML = '';
   if (dockTab === 'events') body.append(eventsPane());
   else if (dockTab === 'capture') body.append(capturePane());
-  else if (dockTab.startsWith('con:')) {
-    const id = +dockTab.slice(4);
-    const c = consoles.get(id);
-    if (c) { body.append(c.el); c.focus(); c.scroll(); }
-    else { dockTab = 'events'; renderDockBody(); }
-  }
   hydrateIcons(body);
 }
 
@@ -3012,14 +3012,22 @@ function openConsole(id) {
   const d = byId.get(id);
   if (!d) return;
   if (!consoles.has(id)) consoles.set(id, isVM(id) ? vmConsole(id) : d.kind === 'ext' ? iosConsole(id) : simConsole(id));
-  showDock('con:' + id);
+  const key = 'con:' + id;
+  if (hasFloat(key)) return openFloat(key, {});
+  const c = consoles.get(id);
+  openFloat(key, {
+    title: d.name, sub: tpl(tplOf(id))?.label ?? '', content: c.el,
+    onClose: () => closeConsole(id),
+    onFocus: () => c.focus?.(),   // any click in the window puts the keyboard in the terminal / VGA screen
+  });
+  c.focus?.();   // after the element is in the window, so the VM terminal can measure itself
+  c.scroll?.();
 }
 function closeConsole(id, silent) {
-  const c = consoles.get(id);
-  if (!c) return;
+  closeFloat('con:' + id);
+  if (!consoles.has(id)) return;
   consoles.delete(id);
-  if (dockTab === 'con:' + id) dockTab = 'events';
-  if (!silent) { renderDockTabs(); renderDockBody(); }
+  if (!silent) renderDockTabs();
 }
 
 function termShell() {
@@ -3154,7 +3162,13 @@ function vmConsole(id) {
     serial: bytes => write(dec.decode(bytes, { stream: true })),
     log: msg => write(`\x1b[2m[netlab] ${msg}\x1b[0m\r\n`),
     setView,
-    onState: st => { renderBar(); if (st === 'stopped') write('\r\n\x1b[2m[VM stopped]\x1b[0m\r\n'); },
+    onState: st => {
+      renderBar();
+      if (st === 'stopped') write('\r\n\x1b[2m[VM stopped]\x1b[0m\r\n');
+      // after Start, the click's focus (the Start button) is usually gone; put the keyboard in the console
+      const a = document.activeElement;
+      if (st === 'running' && (!a || a === document.body || !a.isConnected)) setView(view);
+    },
     focus: () => setView(view),
     scroll: () => {},
   };

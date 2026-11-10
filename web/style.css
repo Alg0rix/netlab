@@ -519,6 +519,16 @@ table.ev tr.sel { background: var(--accent-soft); }
 .vm-serial { flex: 1; min-width: 0; padding: 4px 0 0 8px; }
 .vm-serial .xterm { height: 100%; }
 .vm-screen { flex: 1; min-width: 0; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 8px; background: #000; }
+/* floating console windows */
+.cwin { position: fixed; z-index: 90; display: flex; flex-direction: column; min-width: 320px; min-height: 200px; background: #07090d; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.cwin-head { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 12px; background: #0d1118; border-bottom: 1px solid #1a202b; color: #c9d1dd; font: 12px var(--mono); flex: none; cursor: move; user-select: none; touch-action: none; }
+.cwin-head .spacer { flex: 1; }
+.cwin-head .icon-btn { color: #8b95a7; }
+.cwin-head .icon-btn:hover { color: #e8edf5; }
+.cwin-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cwin-body { flex: 1; min-height: 0; display: flex; }
+.cwin-body > .pane { flex: 1; min-width: 0; }
+.cwin-grip { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #3a4456 50%); }
 .vga { outline: none; border-radius: 4px; box-shadow: 0 0 0 1px #1a202b; }
 .vga:focus { box-shadow: 0 0 0 2px #6fb3ff; }
 .vga-text { white-space: pre; font: 14px/14px ui-monospace, "DejaVu Sans Mono", Consolas, monospace; color: #c8c8c8; }
