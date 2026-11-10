@@ -124,6 +124,7 @@ i[data-i] svg { width: 100%; height: 100%; }
 }
 .brand { display: flex; align-items: center; gap: 7px; font-weight: 650; letter-spacing: -.01em; font-size: 14px; padding-right: 4px; }
 .brand-mark { width: 20px; height: 20px; color: var(--accent); fill: var(--accent); }
+.mbody a { color: var(--accent); }
 #menubar { display: flex; }
 #menubar > button { background: none; border: 0; padding: 5px 9px; border-radius: 6px; color: var(--text-2); }
 #menubar > button:hover, #menubar > button.open { background: var(--hover); color: var(--text); }

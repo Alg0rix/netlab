@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "netlab",
+  "compatibility_date": "2025-11-01",
+  "assets": {
+    "directory": "./web"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

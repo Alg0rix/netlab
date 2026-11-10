@@ -2036,6 +2036,7 @@ function shortcuts() {
 function about() {
   modal('About netlab', `<p>netlab is a network lab that runs entirely in your browser — the switching/routing fabric is Rust compiled to WebAssembly,
     and real Cisco IOS boots inside Dynamips compiled to WebAssembly. Nothing leaves this machine.</p>
+    <p>Marchel Maulana Fahrezi · <a href="https://github.com/Alg0rix/netlab" target="_blank" rel="noopener">github.com/Alg0rix/netlab</a></p>
     <p class="muted">Cross-origin isolated: ${crossOriginIsolated ? 'yes — IOS nodes available' : 'no — IOS nodes need COOP/COEP headers'}</p>`);
 }
 
