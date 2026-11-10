@@ -2,9 +2,10 @@ import init, { NetLab } from './pkg/netlab_wasm.js';
 import { IOSNode, iosArgs, detectIosPlatform } from './ios.js';
 import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
-import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame } from './capture.js';
+import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame, tcpFlow } from './capture.js';
 import { SimShell } from './cli.js';
-import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile } from './store.js';
+import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
+import { emitLab, parseLab } from './labyaml.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
@@ -107,7 +108,8 @@ const portCount = id => {
   return Math.min(d?.ports.length ?? 0, want);
 };
 
-function setNodePorts(id, count) {
+function setNodePorts(id, count, noHist) {
+  if (!noHist) checkpoint();
   const d = byId.get(id), m = meta.get(id), t = tpl(tplOf(id));
   if (!d || !m) return;
   const max = Math.min(d.ports.length, t?.maxPorts ?? d.ports.length);
@@ -166,13 +168,22 @@ function serialize() {
       portCount: portCount(d.id),
       ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic, nics: portCount(d.id) } } : {}),
       ports: d.ports.slice(0, portCount(d.id)).map(p => {
-        if (!p.ip && !p.nat) return null;
         const o = {};
         if (p.ip) { o.ip = p.ip; o.mask = p.mask; }
         if (p.nat) o.nat = p.nat;
-        return o;
+        if (p.trunk) o.trunk = true;
+        if (p.access_vlan && p.access_vlan !== 1) o.access_vlan = p.access_vlan;
+        if (p.native_vlan && p.native_vlan !== 1) o.native_vlan = p.native_vlan;
+        if (p.allowed) o.allowed = p.allowed;
+        if (p.helper) o.helper = p.helper;
+        if (p.in_acl) o.in_acl = p.in_acl;
+        if (p.out_acl) o.out_acl = p.out_acl;
+        if (p.ospf_area != null) o.ospf_area = p.ospf_area;
+        return Object.keys(o).length ? o : null;
       }),
-      routes: d.routes,
+      routes: (d.routes || []).filter(r => r.proto !== 'O'),
+      acls: d.acls || [],
+      ospf: d.ospf_id ? { id: d.ospf_id, nets: d.ospf_nets || [] } : null,
       startup: meta.get(d.id)?.startup || '',
       startupBoot: !!meta.get(d.id)?.startupBoot,
       svc: { dhcp: !!d.svc_dhcp, dns: !!d.svc_dns, http: !!d.svc_http },
@@ -214,15 +225,29 @@ function restore(data) {
     const m = meta.get(id);
     if (n.startup) m.startup = n.startup;
     if (n.startupBoot) m.startupBoot = true;
+    for (const a of n.acls ?? []) {
+      for (const e of a.entries ?? []) {
+        const proto = { 1: 'icmp', 6: 'tcp', 17: 'udp' }[e.proto] || (typeof e.proto === 'string' ? e.proto : 'ip');
+        lab.acl_add(id, a.num, !!e.permit, proto, e.src, e.src_wild, e.dst, e.dst_wild, e.sport || 0, e.dport || 0);
+      }
+    }
     (n.ports ?? []).forEach((p, i) => {
       if (!p) return;
       if (p.ip) lab.set_ip(id, i, p.ip, p.mask);
       if (p.nat) lab.set_nat(id, i, p.nat);
+      if (p.trunk || p.access_vlan || p.native_vlan || p.allowed) {
+        lab.set_switchport(id, i, p.trunk ? 'trunk' : 'access', p.access_vlan || 1, p.native_vlan || 1, p.allowed || '');
+      }
+      if (p.helper) lab.set_helper(id, i, p.helper);
+      if (p.in_acl) lab.set_access_group(id, i, p.in_acl, 'in');
+      if (p.out_acl) lab.set_access_group(id, i, p.out_acl, 'out');
+      if (p.ospf_area != null) lab.ospf_interface(id, i, p.ospf_area);
     });
+    for (const net of n.ospf?.nets ?? []) lab.ospf_network(id, net.prefix, net.wild, net.area || 0);
     if (n.svc) lab.set_services(id, !!n.svc.dhcp, !!n.svc.dns, !!n.svc.http);
     for (const rec of n.dns ?? []) if (rec?.[0] && rec?.[1]) lab.add_dns_record(id, rec[0], rec[1]);
     if (n.resolver) lab.set_dns(id, n.resolver);
-    for (const r of n.routes ?? []) lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
+    for (const r of n.routes ?? []) if (r.proto !== 'O') lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
   }
   for (const l of data?.links ?? []) {
@@ -246,6 +271,38 @@ function restore(data) {
 }
 
 let saveTimer = null;
+const undoStack = [];
+const redoStack = [];
+let histLock = false;
+function checkpoint() {
+  if (histLock) return false;
+  const s = JSON.stringify(serialize());
+  if (undoStack.at(-1) === s) return false;
+  undoStack.push(s);
+  if (undoStack.length > 50) undoStack.shift();
+  redoStack.length = 0;
+  return true;
+}
+function undo() {
+  if (!undoStack.length) return;
+  histLock = true;
+  try {
+    redoStack.push(JSON.stringify(serialize()));
+    restore(JSON.parse(undoStack.pop()));
+    dirty();
+    toast('Undone — running VMs were stopped');
+  } finally { histLock = false; }
+}
+function redo() {
+  if (!redoStack.length) return;
+  histLock = true;
+  try {
+    undoStack.push(JSON.stringify(serialize()));
+    restore(JSON.parse(redoStack.pop()));
+    dirty();
+    toast('Redone — running VMs were stopped');
+  } finally { histLock = false; }
+}
 function dirty() {
   $('#save-state').textContent = 'Saving…';
   clearTimeout(saveTimer);
@@ -325,9 +382,10 @@ const STARTUP = {
   firewall: '# wan0 outside, dmz0, lan0–lan5 inside\nnft add table inet filter\nnft add chain inet filter forward \'{ type filter hook forward priority 0 ; policy drop ; }\'\nnft add rule inet filter forward ct state established,related accept\nnft add rule inet filter forward iifname "lan*" accept\n',
 };
 
-function addNode(tplId, x, y) {
+function addNode(tplId, x, y, noHist) {
   const t = tpl(tplId);
   if (!t || t.disabled) return null;
+  if (!noHist) checkpoint();
   const name = nextName(t.prefix);
   const id = lab.add_device(t.kind, name, snapV(x), snapV(y));
   registerNode(id, t.id, name);
@@ -342,6 +400,7 @@ function addNode(tplId, x, y) {
 function deleteSelection() {
   const n = selCount();
   if (!n) return;
+  checkpoint();
   for (const id of sel.links) { lab.remove_link(id); caps.delete(id); }
   for (const id of sel.nodes) {
     for (const l of snap.links) if (l.a === id || l.b === id) caps.delete(l.id);
@@ -365,12 +424,13 @@ function deleteSelection() {
 function duplicateSelection() {
   const ids = [...sel.nodes];
   if (!ids.length) return;
+  checkpoint();
   const fresh = [];
   for (const id of ids) {
     const d = byId.get(id);
-    const nid = addNode(tplOf(id), d.x + 40, d.y + 40);
+    const nid = addNode(tplOf(id), d.x + 40, d.y + 40, true);
     if (nid != null) {
-      setNodePorts(nid, portCount(id));
+      setNodePorts(nid, portCount(id), true);
       fresh.push(nid);
     }
   }
@@ -485,7 +545,8 @@ const stopAll = () => snap.devices.forEach(d => stopNode(d.id));
 
 function rename(id, name) {
   name = name.trim();
-  if (!name) return;
+  if (!name || name === byId.get(id)?.name) return;
+  checkpoint();
   lab.rename_device(id, name);
   const n = emus.get(id); if (n) n.name = name;
   refresh();
@@ -496,6 +557,7 @@ function rename(id, name) {
 function toggleLink(id) {
   const l = linkById.get(id);
   if (!l) return;
+  checkpoint();
   lab.set_link_up(id, !l.up);
   refresh(); renderAll(); dirty();
 }
@@ -1140,15 +1202,17 @@ cv.addEventListener('pointerdown', e => {
   }
   if (SHAPE_TOOLS.includes(tool)) {
     const isLine = tool === 'line';
+    const pushed = checkpoint();
     const sh = { id: nextShapeId++, kind: tool, x: snapV(wx), y: snapV(wy), w: 0, h: 0,
       stroke: shapeStyle.stroke, fill: !isLine && shapeStyle.fill, dash: shapeStyle.dash, width: shapeStyle.width, text: '' };
     shapes.push(sh);
-    gesture = { type: 'draw', sh };
+    gesture = { type: 'draw', sh, pushed };
     capturePointer(e);
     return;
   }
   const hnd = tool === 'select' ? handleAt(wx, wy) : null;
   if (hnd) {
+    checkpoint();
     gesture = { type: 'resize', sh: hnd.sh, k: hnd.k, orig: { ...hnd.sh } };
     capturePointer(e);
     return;
@@ -1156,6 +1220,7 @@ cv.addEventListener('pointerdown', e => {
   const hit = hitAt(wx, wy);
 
   if (tool === 'note') {
+    checkpoint();
     const n = { id: nextNoteId++, x: snapV(wx), y: snapV(wy), text: 'Note' };
     notes.push(n);
     setTool('select');
@@ -1170,6 +1235,7 @@ cv.addEventListener('pointerdown', e => {
     pickPort(hit.id, e.clientX, e.clientY, port => {
       if (!cable) { cable = { dev: hit.id, port }; updateHint(); return; }
       if (cable.dev === hit.id) { toast('Pick a different device for the other end', 'err'); return; }
+      checkpoint();
       const id = lab.add_link_ports(cable.dev, cable.port, hit.id, port);
       if (id < 0) toast('That interface is already in use', 'err');
       cable = null;
@@ -1237,6 +1303,7 @@ cv.addEventListener('pointermove', e => {
   } else if (gesture.type === 'move') {
     const dx = w.x - gesture.wx, dy = w.y - gesture.wy;
     if (!gesture.moved && Math.hypot(dx, dy) * view.z < 3) return;
+    if (!gesture.moved) checkpoint();
     gesture.moved = true;
     for (const s of gesture.start) lab.move_device(s.id, s.x + dx, s.y + dy);
     for (const s of gesture.nstart) { s.n.x = s.x + dx; s.n.y = s.y + dy; }
@@ -1252,8 +1319,10 @@ cv.addEventListener('pointerup', e => {
   if (g.type === 'pan') { cv.style.cursor = spaceDown ? 'grab' : tool === 'select' ? 'default' : 'crosshair'; return; }
   if (g.type === 'draw') {
     const sh = g.sh;
-    if (Math.abs(sh.w) < 6 && Math.abs(sh.h) < 6) shapes = shapes.filter(x => x !== sh);
-    else {
+    if (Math.abs(sh.w) < 6 && Math.abs(sh.h) < 6) {
+      shapes = shapes.filter(x => x !== sh);
+      if (g.pushed) undoStack.pop();
+    } else {
       if (sh.kind !== 'line') Object.assign(sh, norm(sh));
       setTool('select');
       selectOnly('shape', sh.id);
@@ -1500,17 +1569,21 @@ function focusRename() {
 /* menubar */
 const MENUS = {
   File: () => [
-    { label: 'New lab', icon: 'plus', run: async () => { if (await confirmBox('New lab', 'Start a new empty lab? The current topology is replaced (save it first with Ctrl+S if you need it).', 'New lab', true)) { restore({ name: 'Untitled lab' }); dirty(); } } },
+    { label: 'New lab', icon: 'plus', run: async () => { if (await confirmBox('New lab', 'Start a new empty lab? The current topology is replaced (save it first with Ctrl+S if you need it).', 'New lab', true)) { checkpoint(); restore({ name: 'Untitled lab' }); dirty(); } } },
     { label: 'Topology templates…', icon: 'templates', kbd: 'T', run: () => templateMarketplace() },
     { label: 'Save current as template…', icon: 'plus', run: () => templateMarketplace('all', true), disabled: !snap.devices.length },
     '-',
     { label: 'Open lab file…', icon: 'upload', kbd: 'Ctrl+O', run: openFile },
     { label: 'Save lab file', icon: 'download', kbd: 'Ctrl+S', run: saveFile },
+    { label: 'Save YAML lab…', icon: 'download', run: saveYaml },
     '-',
     { label: 'Export canvas as PNG', icon: 'image', run: exportPng },
-    { label: 'Load demo topology', icon: 'map', run: () => { restore(DEMO()); fit(); dirty(); } },
+    { label: 'Load demo topology', icon: 'map', run: () => { checkpoint(); restore(DEMO()); fit(); dirty(); } },
   ],
   Edit: () => [
+    { label: 'Undo', kbd: 'Ctrl+Z', run: undo, disabled: !undoStack.length },
+    { label: 'Redo', kbd: 'Ctrl+Y', run: redo, disabled: !redoStack.length },
+    '-',
     { label: 'Select all', icon: 'select', kbd: 'Ctrl+A', run: selectAll },
     { label: 'Duplicate', icon: 'plus', kbd: 'Ctrl+D', run: duplicateSelection, disabled: !sel.nodes.size },
     { label: 'Rename', icon: 'tag', kbd: 'F2', run: focusRename, disabled: sel.nodes.size !== 1 },
@@ -1536,6 +1609,7 @@ const MENUS = {
     { label: 'Realtime mode', run: () => setMode('realtime'), sub: mode === 'realtime' ? '●' : '' },
     { label: 'Simulation mode', run: () => setMode('sim'), sub: mode === 'sim' ? '●' : '' },
     '-',
+    { label: 'Snapshots…', icon: 'download', run: snapshotsModal },
     { label: 'Topology templates…', icon: 'templates', kbd: 'T', run: () => templateMarketplace() },
     { label: 'Images…', icon: 'image', run: () => imageManager() },
     { label: 'Clear event log', icon: 'trash', run: () => { events.length = 0; renderEvents(); renderDockTabs(); } },
@@ -1563,6 +1637,10 @@ for (const name of Object.keys(MENUS)) {
 const b64 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = str => Uint8Array.from(atob(str), c => c.charCodeAt(0));
 
+function saveYaml() {
+  const name = (labName || 'lab').replace(/[^\w.-]+/g, '_');
+  download(new Blob([emitLab(serialize())], { type: 'application/yaml' }), `${name}.netlab.yaml`);
+}
 async function saveFile() {
   const name = (labName || 'lab').replace(/[^\w.-]+/g, '_');
   const data = serialize();
@@ -1575,11 +1653,13 @@ async function saveFile() {
   download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `${name}.netlab.json`);
 }
 async function openFile() {
-  const f = await pickFile('.json,.netlab');
+  const f = await pickFile('.json,.netlab,.yaml,.yml');
   if (!f) return;
   try {
-    const data = JSON.parse(await f.text());
+    const text = await f.text();
+    const data = /\.ya?ml$/i.test(f.name) ? parseLab(text) : JSON.parse(text);
     if (data.format !== 'netlab') throw new Error('not a netlab lab file');
+    checkpoint();
     for (const n of data.nodes ?? []) {
       if (!n.nvram) continue;
       n.uid ||= newUid();
@@ -1589,6 +1669,44 @@ async function openFile() {
     restore(data); fit(); dirty();
     toast(`Opened ${f.name}`, 'ok');
   } catch (e) { toast(`Could not open ${f.name}: ${e.message}`, 'err'); }
+}
+async function snapshotsModal() {
+  const box = h(`<div style="display:flex;flex-direction:column;gap:10px">
+    <p class="muted" style="margin:0">A snapshot copies the topology, IOS NVRAM, and each VM disk. Restoring one stops every running VM. Undo does the same.</p>
+    <div class="row"><input class="field" data-name placeholder="Snapshot name" spellcheck="false" /><button class="btn sm primary" data-save>Save</button></div>
+    <div data-list></div>
+  </div>`);
+  const m = modal('Lab snapshots', box);
+  const draw = async () => {
+    const list = await snapshots.list();
+    const el = $('[data-list]', box);
+    el.replaceChildren();
+    if (!list.length) { el.append(h('<div class="empty-note">No snapshots yet.</div>')); return; }
+    for (const s of list) {
+      const when = new Date(s.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      const row = h(`<div class="row" style="margin-top:6px"><span style="flex:1">${esc(s.name)} <span class="muted">${esc(when)}</span></span>
+        <button class="btn sm" data-r>Restore</button><button class="btn sm danger" data-d>Delete</button></div>`);
+      $('[data-r]', row).onclick = async () => {
+        const labData = await snapshots.load(s.id);
+        if (!labData) return toast('That snapshot is missing', 'err');
+        checkpoint();
+        restore(labData); fit(); dirty();
+        toast('Snapshot restored — running VMs were stopped');
+        m.close();
+      };
+      $('[data-d]', row).onclick = async () => { await snapshots.remove(s.id); draw(); };
+      el.append(row);
+    }
+  };
+  $('[data-save]', box).onclick = async () => {
+    const name = $('[data-name]', box).value.trim() || 'snapshot';
+    await snapshots.save(name, serialize());
+    $('[data-name]', box).value = '';
+    toast(`Saved snapshot ${name}`, 'ok');
+    draw();
+  };
+  $('[data-name]', box).onkeydown = e => { if (e.key === 'Enter') $('[data-save]', box).click(); };
+  draw();
 }
 function exportPng() {
   cv.toBlob(b => download(b, `${(labName || 'lab').replace(/[^\w.-]+/g, '_')}.png`));
@@ -1905,7 +2023,8 @@ function shortcuts() {
     ['Space + drag', 'Pan (or middle mouse)'], ['Ctrl + scroll', 'Zoom at cursor'], ['+ / − / 0 / F', 'Zoom in, out, 100%, fit'],
     ['L / G / M', 'Labels, grid, minimap'], ['`', 'Toggle bottom panel'],
     ['Shift+Space', 'Simulation play / pause'], ['.', 'Step one tick'],
-    ['Ctrl+S / Ctrl+O', 'Save / open lab file'], ['Double-click node', 'Open console'], ['Double-click link', 'Toggle capture'],
+    ['Ctrl+S / Ctrl+O', 'Save / open lab file'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo (stops running VMs)'],
+    ['Double-click node', 'Open console'], ['Double-click link', 'Toggle capture'],
   ];
   modal('Keyboard shortcuts', `<div class="shortcuts">${rows.map(([k, v]) => `<kbd>${esc(k)}</kbd><span>${esc(v)}</span>`).join('')}</div>`);
 }
@@ -2094,10 +2213,12 @@ function nodeInspector(id) {
       inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); };
       inp.onchange = () => {
         const v = inp.value.trim();
-        if (!v) { lab.clear_ip(id, i); inp.classList.remove('bad'); }
+        if (!v) { checkpoint(); lab.clear_ip(id, i); inp.classList.remove('bad'); }
         else {
           const m = v.match(/^(\d+\.\d+\.\d+\.\d+)(?:\/(\d+))?$/);
-          if (!m || !lab.set_ip(id, i, m[1], lenMask(m[2] ? +m[2] : 24))) { inp.classList.add('bad'); return toast(`"${v}" is not an address like 10.0.0.1/24`, 'err'); }
+          if (!m) { inp.classList.add('bad'); return toast(`"${v}" is not an address like 10.0.0.1/24`, 'err'); }
+          checkpoint();
+          if (!lab.set_ip(id, i, m[1], lenMask(m[2] ? +m[2] : 24))) { inp.classList.add('bad'); return toast(`"${v}" is not an address like 10.0.0.1/24`, 'err'); }
           inp.classList.remove('bad');
         }
         refresh(); dirty(); renderInspector(true);
@@ -2106,6 +2227,7 @@ function nodeInspector(id) {
     tb.append(tr);
   }
   root.append(ifs);
+  if (isSw && !isExt) root.append(switchportSection(id, d));
 
   if (isHost) {
     const gw = d.routes.find(r => r.prefix === '0.0.0.0')?.next_hop ?? '';
@@ -2114,6 +2236,8 @@ function nodeInspector(id) {
     inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); };
     inp.onchange = () => {
       const v = inp.value.trim();
+      if (v && !/^\d+\.\d+\.\d+\.\d+$/.test(v)) { inp.classList.add('bad'); return toast(`"${v}" is not an IPv4 address`, 'err'); }
+      checkpoint();
       if (!v) { const idx = d.routes.findIndex(r => r.prefix === '0.0.0.0'); if (idx >= 0) lab.remove_route(id, idx); }
       else if (!lab.set_gateway(id, v)) { inp.classList.add('bad'); return toast(`"${v}" is not an IPv4 address`, 'err'); }
       refresh(); dirty(); renderInspector(true);
@@ -2128,8 +2252,10 @@ function nodeInspector(id) {
     const ul = $('ul', s);
     if (!d.routes.length) ul.append(h('<li class="empty-note" style="border:0">Connected networks route automatically.</li>'));
     d.routes.forEach((r, i) => {
-      const li = h(`<li><span>${esc(r.prefix)}/${maskLen(r.mask)} → ${esc(r.next_hop)} <span class="muted">${esc(ifName(id, r.out_port))}</span></span><button class="icon-btn sm" title="Remove">${UI.x}</button></li>`);
-      $('button', li).onclick = () => { lab.remove_route(id, i); refresh(); dirty(); renderInspector(true); };
+      const code = r.proto === 'O' ? 'O' : 'S';
+      const li = h(`<li><span>${code} ${esc(r.prefix)}/${maskLen(r.mask)} → ${esc(r.next_hop)} <span class="muted">${esc(ifName(id, r.out_port))}</span></span>${r.proto === 'O' ? '' : `<button class="icon-btn sm" title="Remove">${UI.x}</button>`}</li>`);
+      const btn = $('button', li);
+      if (btn) btn.onclick = () => { checkpoint(); lab.remove_route(id, i); refresh(); dirty(); renderInspector(true); };
       ul.append(li);
     });
     const add = () => {
@@ -2138,6 +2264,7 @@ function nodeInspector(id) {
       if (!m) return toast('Prefix must look like 10.1.0.0/16', 'err');
       const port = outPortFor(d, nh);
       if (port < 0) return toast(`Next hop ${nh} is not on any connected network`, 'err');
+      checkpoint();
       if (!lab.add_route(id, m[1], lenMask(+m[2]), nh, port)) return toast('Invalid route', 'err');
       refresh(); dirty(); renderInspector(true);
     };
@@ -2145,6 +2272,9 @@ function nodeInspector(id) {
     $('[data-n]', s).onkeydown = e => { if (e.key === 'Enter') add(); };
     root.append(s);
     root.append(natSection(id, d));
+    root.append(relaySection(id, d));
+    root.append(aclSection(id, d));
+    root.append(ospfSection(id, d));
   }
 
   // quick ping
@@ -2168,7 +2298,7 @@ function nodeInspector(id) {
 
   // tables
   if (!isExt && (d.arp.length || isSw)) {
-    const rows = isSw ? d.macs.map(([m, p]) => [m, ifName(id, p)]) : d.arp;
+    const rows = isSw ? d.macs.map(([m, p, v]) => [m, `${ifName(id, p)}  vlan ${v ?? ''}`]) : d.arp;
     const s = h(`<div class="sect"><h4>${isSw ? 'MAC address table' : 'ARP cache'}<span class="spacer"></span><span class="muted mono" style="text-transform:none;letter-spacing:0">${rows.length}</span></h4>
       ${rows.length ? `<table class="tbl-mini">${rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join('')}</table>` : '<div class="empty-note">Empty — send some traffic.</div>'}</div>`);
     root.append(s);
@@ -2246,7 +2376,7 @@ function startupSection(id, d, st) {
   const ta = $('textarea', s);
   ta.oninput = () => { m.startup = ta.value; dirty(); };
   const boot = $('[data-boot]', s);
-  if (boot) boot.onchange = () => { m.startupBoot = boot.checked; dirty(); };
+  if (boot) boot.onchange = () => { checkpoint(); m.startupBoot = boot.checked; dirty(); };
   $('[data-apply]', s).onclick = () => { m.startup = ta.value; applyStartup(id, false); };
   return s;
 }
@@ -2264,6 +2394,7 @@ function servicesSection(id, d) {
     ${d.dhcp ? `<p style="margin:8px 0 0">DHCP client: <span class="mono">${esc(d.dhcp)}</span>${d.resolver ? ` · DNS ${esc(d.resolver)}` : ''}</p>` : ''}
   </div>`);
   const apply = () => {
+    checkpoint();
     const on = k => $(`[data-k="${k}"]`, s).checked;
     lab.set_services(id, on('dhcp'), on('dns'), on('http'));
     refresh(); dirty(); renderInspector(true);
@@ -2271,6 +2402,7 @@ function servicesSection(id, d) {
   $$('[data-k]', s).forEach(c => c.onchange = apply);
   const add = $('[data-add]', s);
   if (add) add.onclick = () => {
+    checkpoint();
     const name = $('[data-n]', s).value.trim(), ip = $('[data-ip]', s).value.trim();
     if (!name || !/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !lab.add_dns_record(id, name, ip)) return toast('A record needs a name and an IPv4 address', 'err');
     refresh(); dirty(); renderInspector(true);
@@ -2292,11 +2424,147 @@ function natSection(id, d) {
       <option value="outside" ${role === 'outside' ? 'selected' : ''}>outside</option>
     </select></td></tr>`);
     $('select', tr).onchange = e => {
+      checkpoint();
       lab.set_nat(id, i, e.target.value || 'off');
       refresh(); dirty(); renderInspector(true);
     };
     tb.append(tr);
   }
+  return s;
+}
+
+function switchportSection(id, d) {
+  const n = portCount(id);
+  const s = h(`<div class="sect"><h4>VLANs</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">Access sends one VLAN untagged. A trunk tags every VLAN except the native one. Allowed blank means all.</p>
+    <table class="iftable"><thead><tr><th>Port</th><th>Mode</th><th>VLAN</th><th>Allowed</th></tr></thead><tbody></tbody></table></div>`);
+  const tb = $('tbody', s);
+  for (let i = 0; i < n; i++) {
+    const p = d.ports[i];
+    const tr = h(`<tr>
+      <td class="ifn">${esc(ifName(id, i))}</td>
+      <td><select class="field" data-mode><option value="access" ${p.trunk ? '' : 'selected'}>access</option><option value="trunk" ${p.trunk ? 'selected' : ''}>trunk</option></select></td>
+      <td><input class="field" data-vid value="${p.trunk ? (p.native_vlan || 1) : (p.access_vlan || 1)}" spellcheck="false" style="width:64px" /></td>
+      <td><input class="field" data-allow value="${esc(p.allowed || '')}" placeholder="all" spellcheck="false" ${p.trunk ? '' : 'disabled'} /></td>
+    </tr>`);
+    const apply = () => {
+      const mode = $('[data-mode]', tr).value;
+      const vid = +$('[data-vid]', tr).value || 1;
+      if (vid < 1 || vid > 4094) return toast('VLAN id is 1–4094', 'err');
+      const allowed = $('[data-allow]', tr).value.trim();
+      checkpoint();
+      lab.set_switchport(id, i, mode, mode === 'access' ? vid : (p.access_vlan || 1), mode === 'trunk' ? vid : (p.native_vlan || 1), mode === 'trunk' && allowed && allowed !== 'all' ? allowed : '');
+      refresh(); dirty(); renderInspector(true);
+    };
+    $('[data-mode]', tr).onchange = apply;
+    $('[data-vid]', tr).onchange = apply;
+    $('[data-allow]', tr).onchange = apply;
+    tb.append(tr);
+  }
+  return s;
+}
+
+function relaySection(id, d) {
+  const n = portCount(id);
+  const s = h(`<div class="sect"><h4>DHCP relay</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">Helper address forwards Discover and Request. The relay address is this interface. With no helper, a limited broadcast stays on the link.</p>
+    <table class="iftable"><tbody></tbody></table></div>`);
+  const tb = $('tbody', s);
+  for (let i = 0; i < n; i++) {
+    const tr = h(`<tr><td class="ifn">${esc(ifName(id, i))}</td><td><input class="field" value="${esc(d.ports[i].helper || '')}" placeholder="DHCP server" spellcheck="false" /></td></tr>`);
+    $('input', tr).onchange = e => {
+      const v = e.target.value.trim();
+      if (v && !/^\d+\.\d+\.\d+\.\d+$/.test(v)) return toast('Helper is an IPv4 address', 'err');
+      checkpoint();
+      if (!lab.set_helper(id, i, v)) return toast('Helper was not set', 'err');
+      refresh(); dirty(); renderInspector(true);
+    };
+    tb.append(tr);
+  }
+  return s;
+}
+
+const PROTO_NAME = { 1: 'icmp', 6: 'tcp', 17: 'udp' };
+function aclSection(id, d) {
+  const n = portCount(id);
+  const lines = [];
+  for (const a of d.acls ?? []) {
+    for (const e of a.entries ?? []) {
+      const proto = PROTO_NAME[e.proto] || 'ip';
+      lines.push(`${a.num} ${e.permit ? 'permit' : 'deny'} ${proto} any any${e.dport ? ' eq ' + e.dport : ''}`);
+    }
+  }
+  const s = h(`<div class="sect"><h4>Extended ACL</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">A list applied to a port ends with an implicit deny. This form matches any address; wildcards stay on the CLI.</p>
+    ${lines.length ? `<ul class="routes">${lines.map(l => `<li><span class="mono">${esc(l)}</span></li>`).join('')}</ul>` : '<div class="empty-note">No ACL entries.</div>'}
+    <div class="row" style="flex-wrap:wrap">
+      <input class="field" data-num placeholder="100" style="max-width:70px" />
+      <select class="field" data-act style="width:auto"><option value="permit">permit</option><option value="deny">deny</option></select>
+      <select class="field" data-proto style="width:auto"><option>ip</option><option>icmp</option><option>tcp</option><option>udp</option></select>
+      <input class="field" data-port placeholder="port" style="max-width:70px" />
+      <button class="btn sm" data-add>Add</button>
+    </div>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap">
+      <select class="field" data-if style="width:auto">${Array.from({ length: n }, (_, i) => `<option value="${i}">${esc(ifName(id, i))}</option>`).join('')}</select>
+      <select class="field" data-dir style="width:auto"><option value="in">in</option><option value="out">out</option></select>
+      <input class="field" data-gnum placeholder="list" style="max-width:70px" />
+      <button class="btn sm" data-grp>Apply</button>
+      <button class="btn sm" data-off>Remove</button>
+      <button class="btn sm" data-clr>Clear list</button>
+    </div></div>`);
+  $('[data-add]', s).onclick = () => {
+    const num = +$('[data-num]', s).value;
+    const proto = $('[data-proto]', s).value;
+    const port = +$('[data-port]', s).value || 0;
+    if (!(num >= 1 && num <= 199)) return toast('ACL number is 1–199', 'err');
+    checkpoint();
+    if (!lab.acl_add(id, num, $('[data-act]', s).value === 'permit', proto, '0.0.0.0', '255.255.255.255', '0.0.0.0', '255.255.255.255', 0, port)) return toast('ACL entry was not added', 'err');
+    refresh(); dirty(); renderInspector(true);
+  };
+  $('[data-grp]', s).onclick = () => {
+    const num = +$('[data-gnum]', s).value;
+    if (!(num >= 1)) return toast('Name the list number to apply', 'err');
+    checkpoint();
+    lab.set_access_group(id, +$('[data-if]', s).value, num, $('[data-dir]', s).value);
+    refresh(); dirty(); renderInspector(true);
+  };
+  $('[data-off]', s).onclick = () => {
+    const dir = $('[data-dir]', s).value;
+    checkpoint();
+    lab.set_access_group(id, +$('[data-if]', s).value, 0, dir === 'out' ? 'off-out' : 'off-in');
+    refresh(); dirty(); renderInspector(true);
+  };
+  $('[data-clr]', s).onclick = () => {
+    const num = +$('[data-num]', s).value || +$('[data-gnum]', s).value;
+    if (!(num >= 1)) return toast('Name the list number to clear', 'err');
+    checkpoint();
+    lab.acl_clear(id, num);
+    refresh(); dirty(); renderInspector(true);
+  };
+  return s;
+}
+
+function ospfSection(id, d) {
+  const nets = d.ospf_nets ?? [];
+  const s = h(`<div class="sect"><h4>OSPFv2</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">${d.ospf_id ? `Router ID ${esc(d.ospf_id)}. Hellos stay on the link. A static route of the same length wins.` : 'Off. A network statement or an interface area turns it on. This is not Cisco OSPF on the wire.'}</p>
+    ${(d.ospf_nbrs ?? []).length ? `<ul class="routes">${d.ospf_nbrs.map(n => `<li><span>neighbor ${esc(n)}</span></li>`).join('')}</ul>` : ''}
+    ${nets.length ? `<ul class="routes">${nets.map(n => `<li><span class="mono">${esc(n.prefix)} ${esc(n.wild)} area ${n.area}</span></li>`).join('')}</ul>` : ''}
+    <div class="row" style="flex-wrap:wrap">
+      <input class="field" data-p placeholder="10.0.0.0" spellcheck="false" />
+      <input class="field" data-w placeholder="0.255.255.255" spellcheck="false" />
+      <input class="field" data-a placeholder="area" value="0" style="max-width:64px" />
+      <button class="btn sm" data-add>Network</button>
+      <button class="btn sm" data-clr ${d.ospf_id ? '' : 'disabled'}>Clear</button>
+    </div></div>`);
+  $('[data-add]', s).onclick = () => {
+    const prefix = $('[data-p]', s).value.trim(), wild = $('[data-w]', s).value.trim();
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(prefix) || !/^\d+\.\d+\.\d+\.\d+$/.test(wild)) return toast('OSPF needs a prefix and a wildcard', 'err');
+    checkpoint();
+    if (!lab.ospf_network(id, prefix, wild, +$('[data-a]', s).value || 0)) return toast('OSPF network was not added', 'err');
+    refresh(); dirty(); renderInspector(true);
+  };
+  $('[data-clr]', s).onclick = () => { checkpoint(); lab.ospf_clear(id); refresh(); dirty(); renderInspector(true); };
   return s;
 }
 
@@ -2343,6 +2611,7 @@ function linkInspector(lid) {
       <button class="btn sm danger" data-a="del">${ico('trash')}Remove</button>
     </div></div>`);
   const commit = () => {
+    checkpoint();
     const num = (sel, d, lo, hi) => {
       const v = +$(sel, root).value;
       return Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d;
@@ -2600,6 +2869,7 @@ function capturePane() {
       <button class="btn sm" data-a="stop">${ico('stop')}Stop</button>` : `<button class="btn sm" data-a="restart">${ico('play')}Restart</button>`}
       <button class="btn sm" data-a="clear">${ico('trash')}Clear</button>
       <button class="btn sm" data-a="replay">Replay</button>
+      <button class="btn sm" data-a="follow">Follow TCP</button>
       <button class="btn sm primary" data-a="pcap" ${s.packets.length ? '' : 'disabled'}>${ico('download')}Save .pcap</button>
     </div>
     <div class="pane-bar cap-filter">
@@ -2667,6 +2937,7 @@ function capturePane() {
       toast('Frame replayed onto the link');
       return;
     }
+    if (a === 'follow') { followTcp(); return; }
     if (a === 'pause') s.paused = !s.paused;
     if (a === 'stop') { lab.set_capture(capLink, false); refresh(); }
     if (a === 'restart') { lab.set_capture(capLink, true); s.paused = false; refresh(); }
@@ -2748,6 +3019,32 @@ function injectCraft(pane, lid) {
   toast(kind === 'arp' ? 'ARP injected' : 'ICMP injected', 'ok');
 }
 
+function followTcp() {
+  const s = caps.get(capLink);
+  const p = s?.packets.find(x => x.n === capPkt);
+  const flow = p && tcpFlow(p.bytes);
+  if (!flow) return toast('Select a TCP packet to follow', 'err');
+  const key = `${flow.src}:${flow.sp}>${flow.dst}:${flow.dp}`;
+  const rev = `${flow.dst}:${flow.dp}>${flow.src}:${flow.sp}`;
+  const chunks = [];
+  let last = '';
+  for (const pkt of s.packets) {
+    const f = tcpFlow(pkt.bytes);
+    if (!f?.data?.length) continue;
+    const k = `${f.src}:${f.sp}>${f.dst}:${f.dp}`;
+    if (k !== key && k !== rev) continue;
+    const dir = `${f.src}:${f.sp} → ${f.dst}:${f.dp}`;
+    if (dir !== last) { chunks.push(`\n— ${dir}\n`); last = dir; }
+    chunks.push(new TextDecoder('latin1').decode(f.data));
+  }
+  capTree.replaceChildren();
+  const pre = document.createElement('pre');
+  pre.className = 'stream';
+  pre.textContent = chunks.join('').trim() || '(no TCP payload in this flow)';
+  capTree.append(pre);
+  capHex.innerHTML = '';
+}
+
 function hl(range) {
   $$('.hl', capHex).forEach(e => e.classList.remove('hl'));
   if (!range) return;
@@ -2792,6 +3089,7 @@ function simConsole(id) {
     dev: i => byId.get(i), snap: () => snap, ifName, portCount, refresh: () => { refresh(); renderInspector(true); dirty(); },
     realtime: () => mode === 'realtime',
     rename: (i, n) => rename(i, n),
+    checkpoint,
   };
   const shell = new SimShell(app, id, t.write);
   t.bar.innerHTML = `<span>${esc(byId.get(id).name)} · ${esc(tpl(tplOf(id)).label)} shell</span><span class="spacer"></span><button class="btn sm" data-clear>${ico('trash')}Clear</button>`;
@@ -3051,7 +3349,7 @@ document.addEventListener('click', e => {
   if (a === 'stop-all') stopAll();
   if (a === 'templates') templateMarketplace();
   if (a === 'images') imageManager();
-  if (a === 'demo') { restore(DEMO()); fit(); dirty(); }
+  if (a === 'demo') { checkpoint(); restore(DEMO()); fit(); dirty(); }
 });
 $$('#mode button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 $('#sim-play').onclick = () => { playing = !playing; updatePlay(); renderStatus(); };
@@ -3068,6 +3366,8 @@ addEventListener('keydown', e => {
   const k = e.key, mod = e.ctrlKey || e.metaKey;
   if (k === ' ' && e.shiftKey) { if (mode !== 'sim') setMode('sim'); playing = !playing; updatePlay(); e.preventDefault(); return; }
   if (k === ' ') { if (!spaceDown) { spaceDown = true; cv.style.cursor = 'grab'; } e.preventDefault(); return; }
+  if (mod && !e.shiftKey && k.toLowerCase() === 'z') { undo(); e.preventDefault(); return; }
+  if (mod && (k.toLowerCase() === 'y' || (e.shiftKey && k.toLowerCase() === 'z'))) { redo(); e.preventDefault(); return; }
   if (mod && k.toLowerCase() === 's') { saveFile(); e.preventDefault(); return; }
   if (mod && k.toLowerCase() === 'o') { openFile(); e.preventDefault(); return; }
   if (mod && k.toLowerCase() === 'a') { selectAll(); e.preventDefault(); return; }

@@ -134,3 +134,104 @@ fn crafted_frame_is_reinjected_on_a_link() {
         msgs.join("\n")
     );
 }
+
+#[test]
+fn access_vlans_isolate_and_a_trunk_joins_them() {
+    let mut t = Topology::new();
+    let a = t.add_device(DeviceKind::Host, "A".into(), 0.0, 0.0);
+    let b = t.add_device(DeviceKind::Host, "B".into(), 0.0, 0.0);
+    let c = t.add_device(DeviceKind::Host, "C".into(), 0.0, 0.0);
+    let sw1 = t.add_device(DeviceKind::Switch, "SW1".into(), 0.0, 0.0);
+    let sw2 = t.add_device(DeviceKind::Switch, "SW2".into(), 0.0, 0.0);
+    t.add_link_ports(a, 0, sw1, 0);
+    t.add_link_ports(c, 0, sw1, 1);
+    t.add_link_ports(sw1, 2, sw2, 0);
+    t.add_link_ports(b, 0, sw2, 1);
+    assert!(t.set_switchport(sw1, 0, false, 10, 1, ""));
+    assert!(t.set_switchport(sw1, 1, false, 20, 1, ""));
+    assert!(t.set_switchport(sw1, 2, true, 1, 1, ""));
+    assert!(t.set_switchport(sw2, 0, true, 1, 1, ""));
+    assert!(t.set_switchport(sw2, 1, false, 10, 1, ""));
+    t.set_ip(a, 0, "10.0.0.1", "255.255.255.0");
+    t.set_ip(b, 0, "10.0.0.2", "255.255.255.0");
+    t.set_ip(c, 0, "10.0.0.3", "255.255.255.0");
+    t.ping(a, "10.0.0.2");
+    let msgs = run(&mut t, 80);
+    assert!(msgs.iter().any(|m| m.contains("reply from 10.0.0.2")), "trunk\n{}", msgs.join("\n"));
+    t.ping(a, "10.0.0.3");
+    let msgs = run(&mut t, 30);
+    assert!(msgs.iter().all(|m| !m.contains("reply from 10.0.0.3")), "isolated\n{}", msgs.join("\n"));
+}
+
+#[test]
+fn extended_acl_denies_then_permits_icmp() {
+    let mut t = Topology::new();
+    let a = t.add_device(DeviceKind::Host, "A".into(), 0.0, 0.0);
+    let r = t.add_device(DeviceKind::Router, "R".into(), 0.0, 0.0);
+    let b = t.add_device(DeviceKind::Host, "B".into(), 0.0, 0.0);
+    t.add_link_ports(a, 0, r, 0);
+    t.add_link_ports(r, 1, b, 0);
+    t.set_ip(a, 0, "10.1.0.2", "255.255.255.0");
+    t.set_gateway(a, "10.1.0.1");
+    t.set_ip(r, 0, "10.1.0.1", "255.255.255.0");
+    t.set_ip(r, 1, "10.2.0.1", "255.255.255.0");
+    t.set_ip(b, 0, "10.2.0.2", "255.255.255.0");
+    t.set_gateway(b, "10.2.0.1");
+    let any = "0.0.0.0";
+    let wild = "255.255.255.255";
+    assert!(t.acl_add(r, 100, false, 1, any, wild, any, wild, 0, 0));
+    assert!(t.set_access_group(r, 0, 100, "in"));
+    t.ping(a, "10.2.0.2");
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("ACL denied")), "deny\n{}", msgs.join("\n"));
+    assert!(msgs.iter().all(|m| !m.contains("reply from 10.2.0.2")));
+    t.acl_clear(r, 100);
+    assert!(t.acl_add(r, 100, true, 1, any, wild, any, wild, 0, 0));
+    assert!(t.set_access_group(r, 0, 100, "in"));
+    t.ping(a, "10.2.0.2");
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("reply from 10.2.0.2")), "permit\n{}", msgs.join("\n"));
+}
+
+#[test]
+fn dhcp_relay_leases_across_a_router() {
+    let mut t = Topology::new();
+    let pc = t.add_device(DeviceKind::Host, "PC".into(), 0.0, 0.0);
+    let r = t.add_device(DeviceKind::Router, "R".into(), 0.0, 0.0);
+    let srv = t.add_device(DeviceKind::Host, "SRV".into(), 0.0, 0.0);
+    t.add_link_ports(pc, 0, r, 0);
+    t.add_link_ports(r, 1, srv, 0);
+    t.set_ip(r, 0, "10.1.0.1", "255.255.255.0");
+    t.set_ip(r, 1, "10.2.0.1", "255.255.255.0");
+    t.set_ip(srv, 0, "10.2.0.10", "255.255.255.0");
+    t.set_gateway(srv, "10.2.0.1");
+    t.set_services(srv, true, false, false);
+    assert!(t.set_helper(r, 0, "10.2.0.10"));
+    assert!(t.dhcp_client(pc, 0));
+    let msgs = run(&mut t, 200);
+    assert_eq!(port_ip(&t, pc).as_deref(), Some("10.1.0.10"), "{}", msgs.join("\n"));
+}
+
+#[test]
+fn ospf_installs_a_remote_prefix_and_static_wins() {
+    let mut t = Topology::new();
+    let r1 = t.add_device(DeviceKind::Router, "R1".into(), 0.0, 0.0);
+    let r2 = t.add_device(DeviceKind::Router, "R2".into(), 0.0, 0.0);
+    t.add_link_ports(r1, 1, r2, 0);
+    t.set_ip(r1, 0, "10.1.0.1", "255.255.255.0");
+    t.set_ip(r1, 1, "10.0.0.1", "255.255.255.252");
+    t.set_ip(r2, 0, "10.0.0.2", "255.255.255.252");
+    t.set_ip(r2, 1, "10.2.0.1", "255.255.255.0");
+    assert!(t.ospf_network(r1, "10.0.0.0", "0.255.255.255", 0));
+    assert!(t.ospf_network(r2, "10.0.0.0", "0.255.255.255", 0));
+    let msgs = run(&mut t, 30);
+    let has = t.snapshot().devices.into_iter().find(|d| d.id == r2).unwrap().routes.iter().any(|r| r.prefix == "10.1.0.0" && r.proto == "O");
+    assert!(has, "no OSPF route\n{}", msgs.join("\n"));
+    t.ping(r2, "10.1.0.1");
+    let msgs = run(&mut t, 40);
+    assert!(msgs.iter().any(|m| m.contains("reply from 10.1.0.1")), "ospf ping\n{}", msgs.join("\n"));
+    t.add_route(r2, "10.1.0.0", "255.255.255.0", "10.0.0.9", 0);
+    t.ping(r2, "10.1.0.1");
+    let msgs = run(&mut t, 30);
+    assert!(msgs.iter().all(|m| !m.contains("reply from 10.1.0.1")), "static should beat OSPF\n{}", msgs.join("\n"));
+}

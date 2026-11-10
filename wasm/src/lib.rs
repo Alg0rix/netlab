@@ -188,6 +188,62 @@ impl NetLab {
         self.topo.set_nat(dev, port, role)
     }
 
+    /// `mode` is "access" or "trunk". `allowed` is "" / "all" or "1,10,20".
+    pub fn set_switchport(&mut self, dev: u32, port: usize, mode: &str, access: u16, native: u16, allowed: &str) -> bool {
+        self.topo.set_switchport(dev, port, mode == "trunk", access, native, allowed)
+    }
+
+    /// Empty `ip` clears the helper.
+    pub fn set_helper(&mut self, dev: u32, port: usize, ip: &str) -> bool {
+        self.topo.set_helper(dev, port, ip)
+    }
+
+    /// `proto` is "ip", "icmp", "tcp" or "udp". Port 0 means any.
+    pub fn acl_add(
+        &mut self,
+        dev: u32,
+        num: u16,
+        permit: bool,
+        proto: &str,
+        src: &str,
+        src_wild: &str,
+        dst: &str,
+        dst_wild: &str,
+        sport: u16,
+        dport: u16,
+    ) -> bool {
+        let proto = match proto {
+            "icmp" => 1,
+            "tcp" => 6,
+            "udp" => 17,
+            "ip" | "any" => 0,
+            _ => return false,
+        };
+        self.topo.acl_add(dev, num, permit, proto, src, src_wild, dst, dst_wild, sport, dport)
+    }
+
+    pub fn acl_clear(&mut self, dev: u32, num: u16) {
+        self.topo.acl_clear(dev, num);
+    }
+
+    /// `dir` is "in", "out", "off-in" or "off-out".
+    pub fn set_access_group(&mut self, dev: u32, port: usize, num: u16, dir: &str) -> bool {
+        self.topo.set_access_group(dev, port, num, dir)
+    }
+
+    pub fn ospf_network(&mut self, dev: u32, prefix: &str, wild: &str, area: u32) -> bool {
+        self.topo.ospf_network(dev, prefix, wild, area)
+    }
+
+    /// `area` < 0 clears `ip ospf` on that interface.
+    pub fn ospf_interface(&mut self, dev: u32, port: usize, area: i32) -> bool {
+        self.topo.ospf_interface(dev, port, if area < 0 { None } else { Some(area as u32) })
+    }
+
+    pub fn ospf_clear(&mut self, dev: u32) {
+        self.topo.ospf_clear(dev);
+    }
+
     /// JSON snapshot of the whole topology for rendering.
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.topo.snapshot()).unwrap_or_else(|_| "{}".into())

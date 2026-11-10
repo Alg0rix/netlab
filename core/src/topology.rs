@@ -50,8 +50,12 @@ pub struct DeviceSnap {
     pub powered: bool,
     /// (ip, mac)
     pub arp: Vec<(String, String)>,
-    /// (mac, port) — switches
-    pub macs: Vec<(String, usize)>,
+    /// (mac, port, vlan) — switches
+    pub macs: Vec<(String, usize, u16)>,
+    pub acls: Vec<AclSnap>,
+    pub ospf_id: String,
+    pub ospf_nets: Vec<OspfNetSnap>,
+    pub ospf_nbrs: Vec<String>,
     pub dhcp: &'static str,
     pub resolver: Option<String>,
     pub svc_dhcp: bool,
@@ -66,6 +70,33 @@ pub struct RouteSnap {
     pub mask: String,
     pub next_hop: String,
     pub out_port: usize,
+    /// "S" static, "O" OSPF
+    pub proto: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct AceSnap {
+    pub permit: bool,
+    pub proto: u8,
+    pub src: String,
+    pub src_wild: String,
+    pub dst: String,
+    pub dst_wild: String,
+    pub sport: u16,
+    pub dport: u16,
+}
+
+#[derive(Serialize)]
+pub struct AclSnap {
+    pub num: u16,
+    pub entries: Vec<AceSnap>,
+}
+
+#[derive(Serialize)]
+pub struct OspfNetSnap {
+    pub prefix: String,
+    pub wild: String,
+    pub area: u32,
 }
 
 #[derive(Serialize)]
@@ -76,6 +107,16 @@ pub struct PortSnap {
     pub link: Option<LinkId>,
     /// "" | "inside" | "outside"
     pub nat: &'static str,
+    pub access_vlan: u16,
+    pub trunk: bool,
+    pub native_vlan: u16,
+    /// Comma-separated VIDs, empty means all (trunk) or unused (access).
+    pub allowed: String,
+    pub in_acl: u16,
+    pub out_acl: u16,
+    pub helper: String,
+    /// OSPF area on this interface, when `ip ospf area` is set.
+    pub ospf_area: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -246,6 +287,9 @@ impl Topology {
                 d.mac_table.clear();
                 d.flows.clear();
                 d.nat.clear();
+                d.ospf.nbrs.clear();
+                d.ospf.lsas.clear();
+                d.ospf.next_hello = 0;
                 if d.dhcp.as_ref().map(|c| c.state != 3).unwrap_or(false) {
                     d.dhcp = None;
                 }
@@ -312,6 +356,7 @@ impl Topology {
                 next_hop: gw_ip,
                 out_port,
                 connected: false,
+                proto: 0,
             });
             return true;
         }
@@ -338,6 +383,7 @@ impl Topology {
                 next_hop,
                 out_port,
                 connected: false,
+                proto: 0,
             });
             return true;
         }
@@ -359,7 +405,7 @@ impl Topology {
             ttl: 64,
             payload: Payload::IcmpEchoRequest,
                 raw: None,
-                icmp_echo: None,
+                icmp_echo: None, vlan: 0,
         };
         d.emit_ip(frame, self.tick, &mut self.events);
         true
@@ -507,7 +553,7 @@ impl Topology {
             ttl: 64,
             payload: Payload::Raw { ethertype: 0 },
             raw: Some(bytes.to_vec()),
-            icmp_echo: None,
+            icmp_echo: None, vlan: 0,
         });
         self.enqueue(link, from_ep, frame);
         true
@@ -641,6 +687,131 @@ impl Topology {
         std::mem::take(&mut self.events)
     }
 
+    pub fn set_switchport(&mut self, dev: DeviceId, port: usize, trunk: bool, access: u16, native: u16, allowed: &str) -> bool {
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        let Some(p) = d.ports.get_mut(port) else { return false };
+        p.trunk = trunk;
+        p.access_vlan = if access == 0 { 1 } else { access.min(4094) };
+        p.native_vlan = if native == 0 { 1 } else { native.min(4094) };
+        let list: Vec<u16> = allowed
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+            .filter_map(|s| s.parse::<u16>().ok())
+            .filter(|v| *v > 0 && *v < 4095)
+            .collect();
+        p.allowed = if list.is_empty() { None } else { Some(list) };
+        d.mac_table.clear();
+        true
+    }
+
+    /// Empty `ip` clears the helper. Limited broadcasts are still not routed.
+    pub fn set_helper(&mut self, dev: DeviceId, port: usize, ip: &str) -> bool {
+        let helper = if ip.is_empty() {
+            None
+        } else {
+            match parse_ip(ip) {
+                Some(ip) => Some(ip),
+                None => return false,
+            }
+        };
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        let Some(p) = d.ports.get_mut(port) else { return false };
+        p.helper = helper;
+        true
+    }
+
+    pub fn acl_clear(&mut self, dev: DeviceId, num: u16) {
+        if let Some(d) = self.devices.get_mut(&dev) {
+            d.acls.retain(|a| a.num != num);
+            for p in &mut d.ports {
+                if p.in_acl == Some(num) { p.in_acl = None; }
+                if p.out_acl == Some(num) { p.out_acl = None; }
+            }
+        }
+    }
+
+    pub fn acl_add(
+        &mut self,
+        dev: DeviceId,
+        num: u16,
+        permit: bool,
+        proto: u8,
+        src: &str,
+        src_wild: &str,
+        dst: &str,
+        dst_wild: &str,
+        sport: u16,
+        dport: u16,
+    ) -> bool {
+        let (Some(src), Some(src_wild), Some(dst), Some(dst_wild)) =
+            (parse_ip(src), parse_ip(src_wild), parse_ip(dst), parse_ip(dst_wild))
+        else {
+            return false;
+        };
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        let ace = crate::device::Ace {
+            permit,
+            proto,
+            src,
+            src_wild,
+            dst,
+            dst_wild,
+            sport: (sport != 0).then_some(sport),
+            dport: (dport != 0).then_some(dport),
+        };
+        if let Some(a) = d.acls.iter_mut().find(|a| a.num == num) {
+            a.entries.push(ace);
+        } else {
+            d.acls.push(crate::device::Acl { num, entries: vec![ace] });
+        }
+        true
+    }
+
+    /// `dir` is "in", "out", "off-in" or "off-out". `num` 0 with off clears.
+    pub fn set_access_group(&mut self, dev: DeviceId, port: usize, num: u16, dir: &str) -> bool {
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        let Some(p) = d.ports.get_mut(port) else { return false };
+        match dir {
+            "in" => p.in_acl = Some(num),
+            "out" => p.out_acl = Some(num),
+            "off-in" => p.in_acl = None,
+            "off-out" => p.out_acl = None,
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn ospf_network(&mut self, dev: DeviceId, prefix: &str, wild: &str, area: u32) -> bool {
+        let (Some(prefix), Some(wild)) = (parse_ip(prefix), parse_ip(wild)) else { return false };
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        d.ospf.on = true;
+        d.ospf.nets.retain(|n| !(n.prefix == prefix && n.wild == wild));
+        d.ospf.nets.push(crate::ospf::OspfNet { prefix, wild, area });
+        true
+    }
+
+    pub fn ospf_interface(&mut self, dev: DeviceId, port: usize, area: Option<u32>) -> bool {
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        if port >= d.ports.len() {
+            return false;
+        }
+        if d.ospf.if_area.len() < d.ports.len() {
+            d.ospf.if_area.resize(d.ports.len(), None);
+        }
+        d.ospf.if_area[port] = area;
+        if area.is_some() {
+            d.ospf.on = true;
+        }
+        true
+    }
+
+    pub fn ospf_clear(&mut self, dev: DeviceId) {
+        if let Some(d) = self.devices.get_mut(&dev) {
+            d.ospf = crate::ospf::Ospf::default();
+            d.routes.retain(|r| r.proto != 1);
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let devices = self
             .devices
@@ -659,7 +830,8 @@ impl Topology {
                 ports: d
                     .ports
                     .iter()
-                    .map(|p| PortSnap {
+                    .enumerate()
+                    .map(|(p_i, p)| PortSnap {
                         ip: p.ip.map(|(a, _)| ip_str(a)),
                         mask: p.ip.map(|(_, m)| ip_str(m)),
                         mac: mac_str(p.mac),
@@ -669,6 +841,14 @@ impl Topology {
                             crate::device::NatRole::Outside => "outside",
                             crate::device::NatRole::Off => "",
                         },
+                        access_vlan: p.access_vlan,
+                        trunk: p.trunk,
+                        native_vlan: p.native_vlan,
+                        allowed: p.allowed.as_ref().map(|v| v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default(),
+                        in_acl: p.in_acl.unwrap_or(0),
+                        out_acl: p.out_acl.unwrap_or(0),
+                        helper: p.helper.map(ip_str).unwrap_or_default(),
+                        ospf_area: d.ospf.if_area.get(p_i).copied().flatten(),
                     })
                     .collect(),
                 routes: d
@@ -679,11 +859,32 @@ impl Topology {
                         mask: ip_str(r.mask),
                         next_hop: ip_str(r.next_hop),
                         out_port: r.out_port,
+                        proto: if r.proto == 1 { "O" } else { "S" },
                     })
                     .collect(),
                 powered: d.powered,
                 arp: d.arp_cache.iter().map(|(ip, mac)| (ip_str(*ip), mac_str(*mac))).collect(),
-                macs: d.mac_table.iter().map(|(mac, p)| (mac_str(*mac), *p)).collect(),
+                macs: d.mac_table.iter().map(|((mac, vlan), p)| (mac_str(*mac), *p, *vlan)).collect(),
+                acls: d.acls.iter().map(|a| AclSnap {
+                    num: a.num,
+                    entries: a.entries.iter().map(|e| AceSnap {
+                        permit: e.permit,
+                        proto: e.proto,
+                        src: ip_str(e.src),
+                        src_wild: ip_str(e.src_wild),
+                        dst: ip_str(e.dst),
+                        dst_wild: ip_str(e.dst_wild),
+                        sport: e.sport.unwrap_or(0),
+                        dport: e.dport.unwrap_or(0),
+                    }).collect(),
+                }).collect(),
+                ospf_id: if d.ospf.on { ip_str(d.ospf.router_id) } else { String::new() },
+                ospf_nets: d.ospf.nets.iter().map(|n| OspfNetSnap {
+                    prefix: ip_str(n.prefix),
+                    wild: ip_str(n.wild),
+                    area: n.area,
+                }).collect(),
+                ospf_nbrs: d.ospf.nbrs.iter().map(|n| format!("{} area {}", ip_str(n.ip), n.area)).collect(),
                 dhcp: crate::services::dhcp_state(d),
                 resolver: d.resolver.map(ip_str),
                 svc_dhcp: d.svc_dhcp,

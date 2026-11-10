@@ -369,6 +369,7 @@ table.ev tr.deliver td.msg { color: var(--ok); }
 .cap-tree summary:hover, .cap-tree .fld:hover { background: var(--hover); }
 .cap-tree .fld { padding: 1px 4px 1px 22px; white-space: nowrap; cursor: default; color: var(--text-2); border-radius: 4px; }
 .cap-tree .fld b { font-weight: 400; color: var(--muted); }
+pre.stream { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; padding: 8px; margin: 0; word-break: break-word; }
 .cap-hex { overflow: auto; padding: 6px 10px; font: 12px/1.55 var(--mono); white-space: pre; }
 .cap-hex .o { color: var(--muted); margin-right: 14px; }
 .cap-hex .b { padding: 0 1px; }

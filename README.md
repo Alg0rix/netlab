@@ -11,7 +11,7 @@ No backend server, local agent, or cloud VM is required. Operating system images
 ## Features
 
 - **Hybrid Simulated + Emulated Fabric**
-  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, ICMP, DHCP (client and server), DNS, HTTP, TCP/UDP probes, and source NAT (masquerade).
+  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, ICMP, DHCP (client and server), DHCP relay, DNS, HTTP, TCP/UDP probes, source NAT (masquerade), extended ACLs, and a simplified OSPFv2. The simulated switch speaks 802.1Q: every port starts as access VLAN 1, so an existing flood still works, and a tag for any other VLAN is dropped until the port is a trunk.
   - **Real Emulated Routers & Managed Switches (`Dynamips` & `v86` in WASM):**
     - **Cisco 7200 Router (`ios`):** Full Cisco IOS L3 router (`f0/0`–`f6/0` + `f0/1`).
     - **Cisco Switch (`ios-sw`):** Up to 16-port managed L2/L3 switch via Dynamips **`NM-16ESW`** hardware EtherSwitch module (`fa1/0`–`fa1/15` on `c3725`/`c3745`/`c2691` images with hardware 802.1Q VLANs, Trunking, VTP, PVST+/STP, Port-Channel, and L3 SVIs) or **`PA-8E`** bridge groups (`e1/0`–`e2/7` on `c7200` images).
@@ -37,12 +37,12 @@ No backend server, local agent, or cloud VM is required. Operating system images
 - **Startup scripts**
   - Every node has a plain-text startup script in the inspector (IOS config, MikroTik `.rsc`, or a shell script). **Apply** pastes it into the console. Simulated nodes can apply it on start. IOS NVRAM (`write memory`) stays separate.
 - **Built-in Packet Capture & Wireshark Export**
-  - Attach a live sniffer to any link. Filter the live list (`stp`, `pvst`, `vlan == 10`, `arp`, `icmp`, `ospf`, `ip == 10.0.0.1`), with row colours for ARP, ICMP, TCP, UDP, DHCP, DNS, STP/PVST+, 802.1Q and routing protocols. Replay a captured frame or inject a crafted Ethernet/VLAN ARP or ICMP frame onto that link. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, DHCP, DNS, HTTP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
+  - Attach a live sniffer to any link. Filter the live list (`stp`, `pvst`, `vlan == 10`, `arp`, `icmp`, `ospf`, `ip == 10.0.0.1`), with row colours for ARP, ICMP, TCP, UDP, DHCP, DNS, STP/PVST+, 802.1Q and routing protocols. Replay a captured frame, inject a crafted Ethernet/VLAN ARP or ICMP frame, or **Follow TCP** to concatenate the payload of the selected 4-tuple in both directions. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, DHCP, DNS, HTTP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
 - **Interactive Consoles**
   - **Simulated CLI:** Built-in VPCS shell for hosts and a Cisco-like CLI for switches and routers featuring Tab completion, command abbreviation (`sh ip int br`, `sh ip ro`, `sh run`), and contextual `?` help.
   - **Emulated Terminals:** Full `xterm.js` serial console and VGA screen tabs for Cisco IOS, RouterOS, Open vSwitch, and x86 VMs.
 - **Diagramming & Portable Labs**
-  - Infinite pan/zoom canvas with grid snap, minimap, interface labels, sticky notes, vector shapes (rectangles, ellipses, lines), dark/light theme toggle, PNG diagram export, and portable `.netlab.json` topology files.
+  - Infinite pan/zoom canvas with grid snap, minimap, interface labels, sticky notes, vector shapes (rectangles, ellipses, lines), dark/light theme toggle, PNG diagram export, and portable `.netlab.json` topology files. **File → Save YAML lab…** writes a readable `.netlab.yaml` of the same topology (startup blocks included). **Edit → Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) restores a topology snapshot and stops running VMs. **Lab → Snapshots…** stores a named copy of the topology plus that moment's IOS NVRAM and VM disks.
 
 ---
 
@@ -137,6 +137,8 @@ show ip                     Display IPv4 addresses, gateway, DNS, DHCP state, an
 show arp | arp              Display the ARP table
 show route                  Display the routing table
 ping <ip> [-c <count>]      Send ICMP echo requests
+traffic <ip> tcp|udp|icmp <port> -c <n>
+                            Send that many probes, spaced like ping
 hostname <name>             Rename the host
 reload                      Reset dynamic state (ARP cache)
 ```
@@ -162,9 +164,30 @@ ip nat inside|outside <if>  Source NAT. Inside hosts are masqueraded as the outs
 show ip nat                 NAT role of each interface
 no ip nat <if>              Clear a NAT role
 ping <ip> [-c <count>]      Send ICMP echo requests from the device
+traffic <ip> tcp|udp|icmp <port> -c <n>
+                            Send that many probes, spaced like ping
 hostname <name>             Rename the device
 reload                      Clear learned ARP and MAC tables
+switchport mode <if> access|trunk
+                            Simulated switch only. Default is access VLAN 1
+switchport access vlan <vid> <if>
+switchport trunk native <vid> <if>
+switchport trunk allowed <if> <list>|all
+                            Trunks tag every VLAN except the native VLAN
+ip access-list <n> permit|deny ip|icmp|tcp|udp <src> <wild> <dst> <wild> [eq <port>]
+                            `any` is 0.0.0.0 255.255.255.255. An applied list ends in an implicit deny
+ip access-group <n> in|out <if>
+no ip access-list <n>       Delete the list and detach it from every port
+ip helper-address <if> <server>
+                            Relay DHCP Discover/Request. giaddr is this interface
+no ip helper-address <if>
+router ospf network <prefix> <wild> area <id>
+ip ospf <if> area <n>       Simplified OSPFv2 (not the Cisco packet). Hellos stay on the link
+no router ospf              Drop adjacencies and O routes
+show ip ospf                Router id, networks, neighbors
 ```
+
+Static routes beat OSPF when the prefix length is the same. A longer OSPF prefix still wins. Connected routes always win. OSPF routes are not written back as `ip route`.
 
 ---
 
@@ -186,7 +209,8 @@ reload                      Clear learned ARP and MAC tables
 | `` ` `` | Toggle bottom dock (Events, Capture, Consoles) |
 | `F2` | Rename selected node |
 | `Ctrl/Cmd` + `D` | Duplicate selection |
-| `Ctrl/Cmd` + `S` / `O` | Save `.netlab.json` / Open `.netlab.json` |
+| `Ctrl/Cmd` + `S` / `O` | Save `.netlab.json` / Open `.netlab.json` or `.netlab.yaml` |
+| `Ctrl/Cmd` + `Z` / `Y` | Undo / redo the topology. This stops running VMs |
 | `Delete` / `Backspace` | Delete selected items |
 | `?` | Show keyboard shortcuts modal |
 
@@ -200,7 +224,8 @@ netlab/
 │   ├── src/
 │   │   ├── device.rs      # Host, Switch, Router, and Ext (emulated bridge) state
 │   │   ├── eth.rs         # Real Ethernet II / ARP / IPv4 / ICMP / TCP / UDP wire codec
-│   │   ├── services.rs    # DHCP, DNS, HTTP, TCP/UDP probes, source NAT
+│   │   ├── services.rs    # DHCP, DNS, HTTP, TCP/UDP probes, source NAT, DHCP relay
+│   │   ├── ospf.rs        # Simplified OSPFv2 hellos, router LSA, SPF
 │   │   ├── frame.rs       # Internal simulation frame representations
 │   │   ├── link.rs        # Point-to-point links, delay, jitter, loss, MTU, speed
 │   │   ├── topology.rs    # Tick-driven L2 learning, L3 longest-prefix match, captures
@@ -217,11 +242,12 @@ netlab/
     ├── main.js            # Canvas topology editor, simulation loop, inspector, marketplace UI
     ├── templates.js       # 25 built-in topology templates (Beginner → Expert) + SVG previewer
     ├── cli.js             # Interactive VPCS & router/switch CLI with Tab/? completion
-    ├── capture.js         # Packet dissector, hex viewer, and libpcap (.pcap) writer
+    ├── capture.js         # Packet dissector, TCP stream follow, hex viewer, libpcap writer
+    ├── labyaml.js         # .netlab.yaml emitter and parser for the subset netlab writes
     ├── ios.js             # Cisco 7200 worker manager & NVRAM sync
     ├── ios_worker.js      # Web Worker hosting the modularized Dynamips WASM build
     ├── vm.js              # v86 emulator integration (MikroTik RouterOS & x86 VMs)
-    ├── store.js           # IndexedDB persistence for images, NVRAM, and VM disks
+    ├── store.js           # IndexedDB for images, NVRAM, VM disks, and named lab snapshots
     └── serve.py           # Local dev server with COOP/COEP headers
 ```
 

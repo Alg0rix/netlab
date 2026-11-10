@@ -53,14 +53,22 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
     }
     let dst_mac = mac_of(&raw[0..6]);
     let src_mac = mac_of(&raw[6..12]);
-    let etype = u16be(raw, 12);
-    let body = &raw[14..];
+    let mut etype = u16be(raw, 12);
+    let mut hdr = 14usize;
+    let mut vlan = 0u16;
+    if (etype == 0x8100 || etype == 0x88a8) && raw.len() >= 18 {
+        vlan = u16be(raw, 14) & 0x0FFF;
+        etype = u16be(raw, 16);
+        hdr = 18;
+    }
+    let body = &raw[hdr..];
     let mut f = Frame {
         src_mac,
         dst_mac,
         src_ip: [0, 0, 0, 0],
         dst_ip: [0, 0, 0, 0],
         ttl: 1,
+        vlan,
         payload: Payload::Raw { ethertype: etype },
         raw: Some(raw.to_vec()),
         icmp_echo: None,
@@ -115,23 +123,60 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
 
 /// Encode a netlab `Frame` into raw Ethernet bytes. Frames carrying original
 /// wire bytes pass through unchanged.
+/// Force the 802.1Q tag on `frame` to `vid` (0 strips it), including `raw` bytes.
+pub fn set_vlan(frame: &mut Frame, vid: u16) {
+    frame.vlan = vid & 0x0FFF;
+    if let Some(raw) = frame.raw.as_mut() {
+        align_tag(raw, frame.vlan);
+    }
+}
+
+fn align_tag(out: &mut Vec<u8>, vid: u16) {
+    if out.len() < 14 {
+        return;
+    }
+    let et = u16be(out, 12);
+    let has = et == 0x8100 || et == 0x88a8;
+    if vid == 0 {
+        if has && out.len() >= 18 {
+            let rest = out[16..].to_vec();
+            out.truncate(12);
+            out.extend_from_slice(&rest);
+        }
+        return;
+    }
+    if has && out.len() >= 16 {
+        let t = (vid & 0x0FFF).to_be_bytes();
+        out[12] = 0x81;
+        out[13] = 0x00;
+        out[14] = t[0];
+        out[15] = t[1];
+        return;
+    }
+    let rest = out[12..].to_vec();
+    out.truncate(12);
+    out.extend_from_slice(&0x8100u16.to_be_bytes());
+    out.extend_from_slice(&(vid & 0x0FFF).to_be_bytes());
+    out.extend_from_slice(&rest);
+}
+
 pub fn encode(f: &Frame) -> Option<Vec<u8>> {
     if let Some(raw) = &f.raw {
-        // Original bytes, but with this hop's MACs and TTL (a router may have
-        // forwarded it); payload and ids stay untouched.
+        // Original bytes, but with this hop's MACs, VLAN tag and TTL.
         let mut out = raw.clone();
         if out.len() >= 14 {
             out[0..6].copy_from_slice(&mac_bytes(f.dst_mac));
             out[6..12].copy_from_slice(&mac_bytes(f.src_mac));
-            if u16be(&out, 12) == 0x0800 && out.len() >= 34 && out[14] >> 4 == 4 {
-                let ihl = ((out[14] & 0x0F) as usize) * 4;
-                if out.len() >= 14 + ihl && out[22] != f.ttl {
-                    out[22] = f.ttl;
-                    out[24] = 0;
-                    out[25] = 0;
-                    let c = cksum(&out[14..14 + ihl]);
-                    out[24] = (c >> 8) as u8;
-                    out[25] = c as u8;
+            align_tag(&mut out, f.vlan);
+            if let Some(off) = ipv4_off(&out) {
+                let ihl = ((out[off] & 0x0F) as usize) * 4;
+                if out.len() >= off + ihl && out[off + 8] != f.ttl {
+                    out[off + 8] = f.ttl;
+                    out[off + 10] = 0;
+                    out[off + 11] = 0;
+                    let c = cksum(&out[off..off + ihl]);
+                    out[off + 10] = (c >> 8) as u8;
+                    out[off + 11] = c as u8;
                 }
             }
         }
@@ -191,11 +236,27 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
         }
         Payload::Raw { .. } => return None,
     }
+    if f.vlan != 0 {
+        align_tag(&mut out, f.vlan);
+    }
     Some(out)
 }
 
 /// Human-readable label for a raw Ethernet frame (event log).
 pub fn raw_label(raw: &[u8]) -> String {
+    if let Some(off) = ipv4_off(raw) {
+        if raw.len() > off + 9 {
+            return match raw[off + 9] {
+                6 => "TCP".into(),
+                17 => "UDP".into(),
+                47 => "GRE".into(),
+                88 => "EIGRP".into(),
+                89 => "OSPF".into(),
+                112 => "VRRP".into(),
+                _ => "IP".into(),
+            };
+        }
+    }
     if raw.len() >= 14 {
         match u16be(raw, 12) {
             0x0800 => {
@@ -426,6 +487,25 @@ fn push_ipv4(out: &mut Vec<u8>, ttl: u8, proto: u8, id: u16, src: [u8; 4], dst: 
     let c = cksum(&out[start..]);
     out[start + 10] = (c >> 8) as u8;
     out[start + 11] = c as u8;
+}
+
+pub(crate) fn build_ip(
+    src_mac: u64,
+    dst_mac: u64,
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    proto: u8,
+    id: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(14 + 20 + payload.len());
+    out.extend_from_slice(&mac_bytes(dst_mac));
+    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&0x0800u16.to_be_bytes());
+    push_ipv4(&mut out, ttl, proto, id, src, dst, payload.len());
+    out.extend_from_slice(payload);
+    out
 }
 
 pub(crate) fn build_udp(

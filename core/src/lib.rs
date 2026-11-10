@@ -3,10 +3,11 @@ pub mod eth;
 mod events;
 mod frame;
 mod link;
+mod ospf;
 mod services;
 mod topology;
 
-pub use device::{Device, DeviceId, DeviceKind, Pending, Port, Route};
+pub use device::{Ace, Acl, Device, DeviceId, DeviceKind, NatRole, Pending, Port, Route};
 pub use events::SimEvent;
 pub use frame::{Frame, Payload, BROADCAST_MAC};
 pub use link::{Endpoint, InFlight, Link, LinkId, LinkSpeed};

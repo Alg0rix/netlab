@@ -21,6 +21,9 @@ pub struct Frame {
     pub src_ip: [u8; 4],
     pub dst_ip: [u8; 4],
     pub ttl: u8,
+    /// 802.1Q VID. 0 means the frame is untagged on the wire.
+    #[serde(default)]
+    pub vlan: u16,
     pub payload: Payload,
     /// Original wire bytes when this came from an emulated (real-Ethernet) node.
     /// Preserved across forwards so checksums/ids survive; dropped when a

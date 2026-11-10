@@ -1,17 +1,18 @@
 // Persistence: router images in IndexedDB (they're 20–150 MB), the lab itself
 // in localStorage (autosave) and as downloadable .netlab.json files.
 
-const DB = 'netlab', STORE = 'images', NVRAM = 'nvram', DISKS = 'disks';
+const DB = 'netlab', STORE = 'images', NVRAM = 'nvram', DISKS = 'disks', SNAPS = 'snaps';
 let dbp = null;
 function db() {
   if (!dbp) dbp = new Promise((res, rej) => {
     try {
-      const r = indexedDB.open(DB, 3);
+      const r = indexedDB.open(DB, 4);
       r.onupgradeneeded = () => {
         const d = r.result;
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: 'name' });
         if (!d.objectStoreNames.contains(NVRAM)) d.createObjectStore(NVRAM, { keyPath: 'uid' });
         if (!d.objectStoreNames.contains(DISKS)) d.createObjectStore(DISKS, { keyPath: 'uid' });
+        if (!d.objectStoreNames.contains(SNAPS)) d.createObjectStore(SNAPS, { keyPath: 'id' });
       };
       r.onsuccess = () => {
         r.result.onversionchange = () => r.result.close();   // never block a newer tab's upgrade
@@ -134,6 +135,86 @@ export const disks = {
   async remove(uid) {
     try { await tx('readwrite', s => s.delete(uid), DISKS); } catch { /* ignore */ }
     memDisks.delete(uid);
+  },
+};
+
+/** Named lab snapshots: topology JSON plus a copy of each node's NVRAM and VM disk. */
+const memSnaps = new Map();
+export const snapshots = {
+  async list() {
+    try {
+      const d = await db();
+      return await new Promise((res, rej) => {
+        const out = [];
+        const req = d.transaction(SNAPS).objectStore(SNAPS).openCursor();
+        req.onsuccess = () => {
+          const c = req.result;
+          if (!c) return res(out.sort((a, b) => b.at - a.at));
+          if (!String(c.key).startsWith('disk:')) out.push({ id: c.value.id, name: c.value.name, at: c.value.at });
+          c.continue();
+        };
+        req.onerror = () => rej(req.error);
+      });
+    } catch {
+      return [...memSnaps.values()].filter(r => !String(r.id).startsWith('disk:')).map(({ id, name, at }) => ({ id, name, at }));
+    }
+  },
+  async save(name, lab) {
+    const id = newUid();
+    const nv = [];
+    for (const n of lab.nodes ?? []) {
+      if (!n.uid) continue;
+      const v = await nvram.get(n.uid);
+      if (v?.data) nv.push({ uid: n.uid, data: v.data });
+      const disk = await disks.get(n.uid);
+      if (disk?.data) {
+        const rec = { id: `disk:${id}:${n.uid}`, blob: new Blob([disk.data]), size: disk.data.byteLength };
+        try { await tx('readwrite', s => s.put(rec), SNAPS); } catch { memSnaps.set(rec.id, rec); }
+      }
+    }
+    const rec = { id, name: name || 'snapshot', at: Date.now(), lab, nvram: nv };
+    try { await tx('readwrite', s => s.put(rec), SNAPS); } catch { memSnaps.set(id, rec); }
+    return id;
+  },
+  async load(id) {
+    let rec = memSnaps.get(id) ?? null;
+    try { rec = (await tx('readonly', s => s.get(id), SNAPS)) ?? rec; } catch { /* memory */ }
+    if (!rec?.lab) return null;
+    for (const v of rec.nvram ?? []) {
+      if (v?.uid && v.data) await nvram.put(v.uid, new Uint8Array(v.data));
+    }
+    for (const n of rec.lab.nodes ?? []) {
+      if (!n.uid) continue;
+      const key = `disk:${id}:${n.uid}`;
+      let disk = memSnaps.get(key) ?? null;
+      try { disk = (await tx('readonly', s => s.get(key), SNAPS)) ?? disk; } catch { /* memory */ }
+      if (disk?.blob) await disks.put(n.uid, await disk.blob.arrayBuffer()).catch(() => {});
+      else if (disk?.data) await disks.put(n.uid, disk.data).catch(() => {});
+    }
+    return rec.lab;
+  },
+  async remove(id) {
+    const drop = async (key) => {
+      try { await tx('readwrite', s => s.delete(key), SNAPS); } catch { /* ignore */ }
+      memSnaps.delete(key);
+    };
+    await drop(id);
+    let keys = [];
+    try {
+      const d = await db();
+      keys = await new Promise((res, rej) => {
+        const out = [];
+        const req = d.transaction(SNAPS).objectStore(SNAPS).openCursor();
+        req.onsuccess = () => {
+          const c = req.result;
+          if (!c) return res(out);
+          if (String(c.key).startsWith(`disk:${id}:`)) out.push(c.key);
+          c.continue();
+        };
+        req.onerror = () => rej(req.error);
+      });
+    } catch { keys = [...memSnaps.keys()].filter(k => String(k).startsWith(`disk:${id}:`)); }
+    for (const k of keys) await drop(k);
   },
 };
 

@@ -122,13 +122,20 @@ fn managed_switch_16_ports_and_l2_multicast_vlan_forwarding() {
     let rx = run_until_ext(&mut t, 40);
     assert!(rx.iter().any(|f| f == &bpdu), "STP BPDU multicast forwarded intact to peer switch");
 
-    // 2. IEEE 802.1Q VLAN-tagged frame (EtherType 0x8100, VLAN 10) must pass intact
+    // 2. Access ports (the default) drop a tag that is not VLAN 1.
     let mut vlan_frame = vec![0xff; 6];
     vlan_frame.extend_from_slice(&[0xc2, 0x01, 0x00, 0x00, 0x00, 0x0f]);
     vlan_frame.extend_from_slice(&[0x81, 0x00, 0x00, 0x0a, 0x08, 0x06]); // 802.1Q VID 10 + ARP
     vlan_frame.extend_from_slice(&[0u8; 28]);
     t.ext_inject(csw1, 15, &vlan_frame);
-    let rx2 = run_until_ext(&mut t, 40);
-    assert!(rx2.iter().any(|f| f == &vlan_frame), "802.1Q VLAN 10 frame forwarded intact");
+    let rx2 = run_until_ext(&mut t, 20);
+    assert!(rx2.iter().all(|f| f != &vlan_frame), "access VLAN 1 drops VLAN 10");
+
+    // 3. Trunk ports pass the same tag intact.
+    assert!(t.set_switchport(sw, 0, true, 1, 1, ""));
+    assert!(t.set_switchport(sw, 1, true, 1, 1, ""));
+    t.ext_inject(csw1, 15, &vlan_frame);
+    let rx3 = run_until_ext(&mut t, 40);
+    assert!(rx3.iter().any(|f| f == &vlan_frame), "802.1Q VLAN 10 frame forwarded intact on a trunk");
 }
 

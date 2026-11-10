@@ -91,6 +91,7 @@ pub fn poll(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
             i += 1;
         }
     }
+    crate::ospf::tick(dev, tick, events);
 }
 
 pub fn start_dhcp(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimEvent>) -> bool {
@@ -118,7 +119,7 @@ fn send_discover(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimE
     c.next = tick + 40;
     c.xid = xid;
     let mac = dev.ports[port].mac;
-    let pkt = dhcp_packet(1, xid, mac, [0; 4], [0; 4], &[(53, vec![DHCP_DISCOVER]), (55, vec![1, 3, 6])]);
+    let pkt = dhcp_packet(1, xid, mac, [0; 4], [0; 4], [0; 4], &[(53, vec![DHCP_DISCOVER]), (55, vec![1, 3, 6])]);
     let frame = udp_frame(dev, port, mac, BROADCAST_MAC, [0; 4], [255, 255, 255, 255], 68, 67, &pkt);
     note(events, tick, dev, "dhcp", &format!("DHCP discover on {}", port_label(dev, port)));
     dev.outbox.push((port, frame));
@@ -138,7 +139,7 @@ fn send_request(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimEv
         (54, c.server.to_vec()),
         (55, vec![1, 3, 6]),
     ];
-    let pkt = dhcp_packet(1, c.xid, mac, [0; 4], [0; 4], &opts);
+    let pkt = dhcp_packet(1, c.xid, mac, [0; 4], [0; 4], [0; 4], &opts);
     let frame = udp_frame(dev, port, mac, BROADCAST_MAC, [0; 4], [255, 255, 255, 255], 68, 67, &pkt);
     note(events, tick, dev, "dhcp", &format!("DHCP request {}", ip_str(c.offer)));
     dev.outbox.push((port, frame));
@@ -176,7 +177,7 @@ pub fn start_dns(dev: &mut Device, name: &str, tick: u64, events: &mut Vec<SimEv
         ttl: 64,
         payload: Payload::Raw { ethertype: 0x0800 },
         raw: None,
-        icmp_echo: None,
+        icmp_echo: None, vlan: 0,
     };
     // emit_ip fills MACs; attach UDP once we know the source mac inside a raw build after routing.
     // Build with a placeholder mac and let emit_ip / encode keep raw bytes — so the UDP must
@@ -248,7 +249,7 @@ pub fn start_udp(dev: &mut Device, dst: [u8; 4], dport: u16, payload: &[u8], tic
             ttl: 64,
             payload: Payload::Raw { ethertype: 0x0800 },
             raw: Some(raw),
-            icmp_echo: None,
+            icmp_echo: None, vlan: 0,
         },
         tick,
         events,
@@ -302,8 +303,8 @@ pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>) {
     if dev.kind != DeviceKind::Router {
         return;
     }
-    let Some(route) = lookup_out(dev, frame.dst_ip) else { return };
-    let out = route;
+    let Some(route) = dev.lookup(frame.dst_ip) else { return };
+    let out = route.out_port;
     if dev.ports.get(out).map(|p| p.nat) != Some(NatRole::Outside) {
         return;
     }
@@ -376,8 +377,7 @@ pub fn local_l4(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, even
     let bcast = frame.dst_ip == [255, 255, 255, 255] || frame.dst_mac == BROADCAST_MAC;
     let mine = dev.ports.iter().any(|p| p.ip.map(|(a, _)| a) == Some(frame.dst_ip));
     if v.proto == 17 && (v.dport == 67 || v.dport == 68) {
-        on_dhcp(dev, frame, raw, in_port, tick, events);
-        return true;
+        return dhcp_dispatch(dev, frame, raw, in_port, tick, events);
     }
     if bcast && !mine {
         return dev.kind != DeviceKind::Router;
@@ -404,33 +404,106 @@ pub fn local_l4(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, even
     false
 }
 
-fn on_dhcp(dev: &mut Device, frame: &Frame, raw: &[u8], in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
-    let Some(v) = view_ip(raw) else { return };
+/// DHCP stays on the link unless a helper is set. Relayed unicasts are routed.
+fn dhcp_dispatch(dev: &mut Device, frame: &Frame, raw: &[u8], in_port: usize, tick: u64, events: &mut Vec<SimEvent>) -> bool {
+    let Some(v) = view_ip(raw) else { return true };
     let payload = &raw[v.payload.min(raw.len())..];
-    let Some(msg) = parse_dhcp(payload) else { return };
-    if v.dport == 67 && dev.svc_dhcp {
-        serve_dhcp(dev, &msg, in_port, tick, events);
-    }
+    let bcast = frame.dst_ip == [255, 255, 255, 255] || frame.dst_mac == BROADCAST_MAC;
+    let mine = dev.ports.iter().any(|p| p.ip.map(|(a, _)| a) == Some(frame.dst_ip));
     if v.dport == 68 {
-        if let Some(c) = dev.dhcp.clone() {
-            if msg.xid == c.xid && msg.chaddr == mac6(dev.ports[c.port].mac) {
-                client_dhcp(dev, &msg, tick, events);
+        if let Some(msg) = parse_dhcp(payload) {
+            if let Some(c) = dev.dhcp.clone() {
+                if msg.xid == c.xid && msg.chaddr == mac6(dev.ports[c.port].mac) {
+                    client_dhcp(dev, &msg, tick, events);
+                }
             }
         }
+        return true;
     }
-    let _ = frame;
+    let Some(msg) = parse_dhcp(payload) else {
+        return bcast || mine;
+    };
+    if dev.svc_dhcp && (bcast || mine || msg.giaddr != [0; 4]) {
+        serve_dhcp(dev, &msg, in_port, tick, events);
+        return true;
+    }
+    if mine {
+        if msg.bootp == 2 {
+            if let Some(port) = dev.ports.iter().position(|p| p.ip.map(|(a, _)| a) == Some(msg.giaddr)) {
+                relay_to_client(dev, port, payload, tick, events);
+            }
+        }
+        return true;
+    }
+    if bcast {
+        if msg.giaddr == [0; 4] && payload.get(3).copied().unwrap_or(0) < 8 {
+            if let Some(helper) = dev.ports.get(in_port).and_then(|p| p.helper) {
+                relay_to_helper(dev, in_port, helper, payload, tick, events);
+            }
+        }
+        return true;
+    }
+    false
+}
+
+fn relay_to_helper(dev: &mut Device, in_port: usize, helper: [u8; 4], payload: &[u8], tick: u64, events: &mut Vec<SimEvent>) {
+    let Some((src, _)) = dev.ports.get(in_port).and_then(|p| p.ip) else { return };
+    let mut pkt = payload.to_vec();
+    if pkt.len() < 34 {
+        return;
+    }
+    pkt[3] = pkt[3].saturating_add(1);
+    pkt[24..28].copy_from_slice(&src);
+    let raw = eth::build_udp(0, 0, src, helper, 64, dev.ip_id, 67, 67, &pkt);
+    dev.ip_id = dev.ip_id.wrapping_add(1);
+    note(events, tick, dev, "dhcp", &format!("DHCP relay {} -> {}", ip_str(src), ip_str(helper)));
+    dev.emit_ip(
+        Frame {
+            src_mac: 0,
+            dst_mac: 0,
+            src_ip: src,
+            dst_ip: helper,
+            ttl: 64,
+            vlan: 0,
+            payload: Payload::Raw { ethertype: 0x0800 },
+            raw: Some(raw),
+            icmp_echo: None,
+        },
+        tick,
+        events,
+    );
+}
+
+fn relay_to_client(dev: &mut Device, port: usize, payload: &[u8], tick: u64, events: &mut Vec<SimEvent>) {
+    let Some((src, _)) = dev.ports.get(port).and_then(|p| p.ip) else { return };
+    let smac = dev.ports[port].mac;
+    let frame = udp_frame(dev, port, smac, BROADCAST_MAC, src, [255, 255, 255, 255], 67, 68, payload);
+    note(events, tick, dev, "dhcp", &format!("DHCP relay reply on {}", port_label(dev, port)));
+    dev.outbox.push((port, frame));
 }
 
 fn serve_dhcp(dev: &mut Device, msg: &DhcpMsg, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
     if msg.op != DHCP_DISCOVER && msg.op != DHCP_REQUEST {
         return;
     }
-    let port = dev
-        .ports
-        .iter()
-        .position(|p| p.ip.is_some() && p.link.is_some())
-        .unwrap_or(in_port);
-    let Some((my_ip, mask)) = dev.ports.get(port).and_then(|p| p.ip) else { return };
+    let relayed = msg.giaddr != [0; 4];
+    let port = if relayed {
+        dev.ports.iter().position(|p| p.ip.is_some()).unwrap_or(in_port)
+    } else {
+        dev.ports.iter().position(|p| p.ip.is_some() && p.link.is_some()).unwrap_or(in_port)
+    };
+    let Some((my_ip, mask)) = (if relayed {
+        let mask = dev
+            .ports
+            .iter()
+            .find_map(|p| p.ip.filter(|(a, m)| crate::net_of(*a, *m) == crate::net_of(msg.giaddr, *m)).map(|(_, m)| m))
+            .unwrap_or([255, 255, 255, 0]);
+        Some((msg.giaddr, mask))
+    } else {
+        dev.ports.get(port).and_then(|p| p.ip)
+    }) else {
+        return;
+    };
     let mac = u64_mac(&msg.chaddr);
     let ip = if let Some(ip) = dev.leases.get(&mac).copied() {
         ip
@@ -447,16 +520,37 @@ fn serve_dhcp(dev: &mut Device, msg: &DhcpMsg, in_port: usize, tick: u64, events
         (1, mask.to_vec()),
         (51, 3600u32.to_be_bytes().to_vec()),
     ];
-    let gw = dev.ports[port].ip.map(|(a, _)| a).unwrap_or(my_ip);
+    let gw = if relayed { msg.giaddr } else { dev.ports.get(port).and_then(|p| p.ip.map(|(a, _)| a)).unwrap_or(my_ip) };
     opts.push((3, gw.to_vec()));
-    let dns = dev.resolver.unwrap_or(my_ip);
+    let src = dev.ports.iter().find_map(|p| p.ip.map(|(a, _)| a)).unwrap_or(my_ip);
+    let dns = dev.resolver.unwrap_or(src);
     opts.push((6, dns.to_vec()));
-    let pkt = dhcp_packet(2, msg.xid, mac, ip, my_ip, &opts);
-    let smac = dev.ports[port].mac;
-    let frame = udp_frame(dev, port, smac, BROADCAST_MAC, my_ip, [255, 255, 255, 255], 67, 68, &pkt);
+    let pkt = dhcp_packet(2, msg.xid, mac, ip, src, if relayed { msg.giaddr } else { [0; 4] }, &opts);
     let word = if typ == DHCP_OFFER { "offer" } else { "ack" };
     note(events, tick, dev, "dhcp", &format!("DHCP {word} {} to {}", ip_str(ip), crate::mac_str(mac)));
-    dev.outbox.push((port, frame));
+    if relayed {
+        let raw = eth::build_udp(0, 0, src, msg.giaddr, 64, dev.ip_id, 67, 67, &pkt);
+        dev.ip_id = dev.ip_id.wrapping_add(1);
+        dev.emit_ip(
+            Frame {
+                src_mac: 0,
+                dst_mac: 0,
+                src_ip: src,
+                dst_ip: msg.giaddr,
+                ttl: 64,
+                vlan: 0,
+                payload: Payload::Raw { ethertype: 0x0800 },
+                raw: Some(raw),
+                icmp_echo: None,
+            },
+            tick,
+            events,
+        );
+    } else {
+        let smac = dev.ports[port].mac;
+        let frame = udp_frame(dev, port, smac, BROADCAST_MAC, my_ip, [255, 255, 255, 255], 67, 68, &pkt);
+        dev.outbox.push((port, frame));
+    }
 }
 
 fn client_dhcp(dev: &mut Device, msg: &DhcpMsg, tick: u64, events: &mut Vec<SimEvent>) {
@@ -488,6 +582,7 @@ fn client_dhcp(dev: &mut Device, msg: &DhcpMsg, tick: u64, events: &mut Vec<SimE
                 next_hop: gw,
                 out_port: port,
                 connected: false,
+                proto: 0,
             });
         }
         if dns != [0; 4] {
@@ -534,7 +629,7 @@ fn on_dns(dev: &mut Device, frame: &Frame, raw: &[u8], v: eth::IpView, in_port: 
             ttl: 64,
             payload: Payload::Raw { ethertype: 0x0800 },
             raw: Some(bytes),
-            icmp_echo: None,
+            icmp_echo: None, vlan: 0,
         },
     ));
     note(events, tick, dev, "dns", &format!("DNS {name} → {}", ip.map(ip_str).unwrap_or_else(|| "NXDOMAIN".into())));
@@ -719,7 +814,7 @@ fn send_tcp(
             ttl: 64,
             payload: Payload::Raw { ethertype: 0x0800 },
             raw: Some(raw),
-            icmp_echo: None,
+            icmp_echo: None, vlan: 0,
         },
         tick,
         events,
@@ -771,7 +866,7 @@ fn send_unreach(dev: &mut Device, frame: &Frame, raw: &[u8], in_port: usize, tic
             ttl: 64,
             payload: Payload::Raw { ethertype: 0x0800 },
             raw: Some(out),
-            icmp_echo: None,
+            icmp_echo: None, vlan: 0,
         },
     ));
     let _ = tick;
@@ -823,9 +918,11 @@ fn inc_ip(mut ip: [u8; 4]) -> [u8; 4] {
 
 struct DhcpMsg {
     op: u8,
+    bootp: u8,
     xid: u32,
     yiaddr: [u8; 4],
     siaddr: [u8; 4],
+    giaddr: [u8; 4],
     chaddr: [u8; 6],
     opts: Vec<(u8, Vec<u8>)>,
 }
@@ -868,9 +965,11 @@ fn parse_dhcp(p: &[u8]) -> Option<DhcpMsg> {
     }
     Some(DhcpMsg {
         op: typ,
+        bootp: p[0],
         xid: u32::from_be_bytes(p[4..8].try_into().ok()?),
         yiaddr: p[16..20].try_into().ok()?,
         siaddr: p[20..24].try_into().ok()?,
+        giaddr: p[24..28].try_into().ok()?,
         chaddr: p[28..34].try_into().ok()?,
         opts,
     })
@@ -880,7 +979,7 @@ fn opt4(msg: &DhcpMsg, code: u8) -> Option<[u8; 4]> {
     msg.opts.iter().find(|(c, _)| *c == code).and_then(|(_, v)| v.as_slice().try_into().ok())
 }
 
-fn dhcp_packet(op: u8, xid: u32, mac: u64, yiaddr: [u8; 4], siaddr: [u8; 4], opts: &[(u8, Vec<u8>)]) -> Vec<u8> {
+fn dhcp_packet(op: u8, xid: u32, mac: u64, yiaddr: [u8; 4], siaddr: [u8; 4], giaddr: [u8; 4], opts: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut p = vec![0u8; 240];
     p[0] = op; // 1 request, 2 reply
     p[1] = 1;
@@ -889,6 +988,7 @@ fn dhcp_packet(op: u8, xid: u32, mac: u64, yiaddr: [u8; 4], siaddr: [u8; 4], opt
     p[10] = 0x80; // broadcast flag
     p[16..20].copy_from_slice(&yiaddr);
     p[20..24].copy_from_slice(&siaddr);
+    p[24..28].copy_from_slice(&giaddr);
     p[28..34].copy_from_slice(&mac6(mac));
     p[236..240].copy_from_slice(&[99, 130, 83, 99]);
     for (c, v) in opts {
@@ -1009,7 +1109,7 @@ fn udp_frame(dev: &mut Device, _port: usize, smac: u64, dmac: u64, src: [u8; 4],
         ttl: 64,
         payload: Payload::Raw { ethertype: 0x0800 },
         raw: Some(raw),
-        icmp_echo: None,
+        icmp_echo: None, vlan: 0,
     }
 }
 
@@ -1026,30 +1126,6 @@ fn l4_tuple(frame: &Frame) -> (u8, u16, u16, u16) {
         }
         _ => (0, 0, 0, 0),
     }
-}
-
-fn lookup_out(dev: &Device, dst: [u8; 4]) -> Option<usize> {
-    // mirror Device::lookup's port choice without making it public twice
-    let mut best: Option<(u32, usize)> = None;
-    for (i, p) in dev.ports.iter().enumerate() {
-        if let Some((addr, mask)) = p.ip {
-            if crate::net_of(dst, mask) == crate::net_of(addr, mask) {
-                let bits = crate::mask_bits(mask);
-                if best.map(|(b, _)| b < bits).unwrap_or(true) {
-                    best = Some((bits, i));
-                }
-            }
-        }
-    }
-    for r in &dev.routes {
-        if crate::net_of(dst, r.mask) == crate::net_of(r.prefix, r.mask) {
-            let bits = crate::mask_bits(r.mask);
-            if best.map(|(b, _)| b <= bits).unwrap_or(true) {
-                best = Some((bits, r.out_port));
-            }
-        }
-    }
-    best.map(|(_, p)| p)
 }
 
 fn first_ip(dev: &Device) -> Option<[u8; 4]> {
@@ -1083,7 +1159,7 @@ fn port_label(dev: &Device, port: usize) -> String {
     format!("port {port} ({})", dev.name)
 }
 
-fn note(events: &mut Vec<SimEvent>, tick: u64, dev: &Device, kind: &'static str, msg: &str) {
+pub(crate) fn note(events: &mut Vec<SimEvent>, tick: u64, dev: &Device, kind: &'static str, msg: &str) {
     events.push(SimEvent::new(tick, Some(dev.id), None, kind, format!("{}: {msg}", dev.name)));
 }
 

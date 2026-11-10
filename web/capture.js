@@ -181,6 +181,27 @@ export function hexRows(b) {
   return rows;
 }
 
+/** TCP payload of one frame, or null when it is not TCP. */
+export function tcpFlow(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < 34) return null;
+  let et = (b[12] << 8) | b[13], off = 14;
+  if (et === 0x8100 || et === 0x88a8) {
+    if (b.length < 38) return null;
+    et = (b[16] << 8) | b[17];
+    off = 18;
+  }
+  if (et !== 0x0800 || b.length < off + 20 || b[off + 9] !== 6) return null;
+  const ihl = (b[off] & 0x0f) * 4;
+  const p = off + ihl;
+  if (b.length < p + 20) return null;
+  const doff = Math.max(20, (b[p + 12] >> 4) * 4);
+  const data = b.subarray(Math.min(b.length, p + doff));
+  const src = `${b[off + 12]}.${b[off + 13]}.${b[off + 14]}.${b[off + 15]}`;
+  const dst = `${b[off + 16]}.${b[off + 17]}.${b[off + 18]}.${b[off + 19]}`;
+  return { src, dst, sp: (b[p] << 8) | b[p + 1], dp: (b[p + 2] << 8) | b[p + 3], data };
+}
+
 /** libpcap (LINKTYPE_ETHERNET) file from [{ tick, bytes }] */
 export function toPcap(packets) {
   const len = 24 + packets.reduce((s, p) => s + 16 + p.bytes.length, 0);
