@@ -66,6 +66,16 @@ make serve
 
 Then open **`http://localhost:8471`** in a modern desktop browser (Chromium, Firefox, or Safari).
 
+### Docker
+
+No Rust toolchain needed — the prebuilt `web/pkg/` artifacts are committed, so the image is just nginx serving `web/` with the COOP/COEP headers already configured:
+
+```sh
+docker compose up --build
+```
+
+Then open **`http://localhost:8471`**.
+
 > **Why `make serve`?**
 > Emulated Cisco IOS uses WebAssembly pthreads backed by `SharedArrayBuffer`, which requires the page to be served in a cross-origin isolated context (`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`). `web/serve.py` sets these headers automatically, and netlab ships `web/_headers` with the same policy for hosts that honor it (including Cloudflare). On other static hosting (Vercel, Netlify, GitHub Pages + service worker, or Nginx), configure those two HTTP response headers to enable Cisco IOS nodes.
 

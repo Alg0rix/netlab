@@ -1,0 +1,5 @@
+services:
+  netlab:
+    build: .
+    ports:
+      - "8471:8471"

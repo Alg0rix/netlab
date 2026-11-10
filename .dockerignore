@@ -1,0 +1,6 @@
+.git
+target
+emu
+docs
+.wrangler
+node_modules
