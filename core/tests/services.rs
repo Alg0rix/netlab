@@ -36,14 +36,19 @@ fn dhcp_dns_and_http_between_hosts() {
     assert!(t.dns_query(pc, "lab.local"));
     let msgs = run(&mut t, 40);
     assert!(
-        msgs.iter().any(|m| m.contains("lab.local") && m.contains("10.1.0.9")),
+        msgs.iter()
+            .any(|m| m.contains("lab.local") && m.contains("10.1.0.9")),
         "{}",
         msgs.join("\n")
     );
 
     assert!(t.http_get(pc, "10.1.0.1", 80));
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("HTTP 200")), "{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("HTTP 200")),
+        "{}",
+        msgs.join("\n")
+    );
 
     assert!(t.probe_tcp(pc, "10.1.0.1", 22));
     let msgs = run(&mut t, 40);
@@ -81,7 +86,11 @@ fn nat_masquerade_lets_an_inside_host_ping_out() {
     );
     let caps = t.drain_captures();
     let saw_masq = caps.iter().any(|c| {
-        c.bytes.len() >= 30 && c.bytes[26] == 203 && c.bytes[27] == 0 && c.bytes[28] == 113 && c.bytes[29] == 1
+        c.bytes.len() >= 30
+            && c.bytes[26] == 203
+            && c.bytes[27] == 0
+            && c.bytes[28] == 113
+            && c.bytes[29] == 1
     });
     assert!(saw_masq, "outside link never saw the NAT address");
 }
@@ -98,18 +107,30 @@ fn loss_and_mtu_drop_and_a_slow_link_still_delivers() {
     t.set_link_impair(l, 4, 0, 100, 0, "1G");
     t.ping(a, "10.0.0.2");
     let msgs = run(&mut t, 30);
-    assert!(msgs.iter().any(|m| m.contains("impairment")), "{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("impairment")),
+        "{}",
+        msgs.join("\n")
+    );
     assert!(!msgs.iter().any(|m| m.contains("reply from")));
 
     t.set_link_impair(l, 4, 0, 0, 20, "WAN");
     t.ping(a, "10.0.0.2");
     let msgs = run(&mut t, 20);
-    assert!(msgs.iter().any(|m| m.contains("exceeds MTU")), "{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("exceeds MTU")),
+        "{}",
+        msgs.join("\n")
+    );
 
     t.set_link_impair(l, 12, 2, 0, 0, "WAN");
     t.ping(a, "10.0.0.2");
     let msgs = run(&mut t, 80);
-    assert!(msgs.iter().any(|m| m.contains("reply from 10.0.0.2")), "{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 10.0.0.2")),
+        "{}",
+        msgs.join("\n")
+    );
 }
 
 #[test]
@@ -120,7 +141,9 @@ fn crafted_frame_is_reinjected_on_a_link() {
     let l = t.add_link(a, b).unwrap();
     t.set_ip(b, 0, "10.0.0.2", "255.255.255.0");
     // Ethernet + ARP request: who-has 10.0.0.2 tell 10.0.0.1, from a known mac
-    let mut bytes = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0, 0, 0, 0, 0x11, 0x08, 0x06];
+    let mut bytes = vec![
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0, 0, 0, 0, 0x11, 0x08, 0x06,
+    ];
     bytes.extend_from_slice(&[0, 1, 0x08, 0, 6, 4, 0, 1]);
     bytes.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x11]);
     bytes.extend_from_slice(&[10, 0, 0, 1]);
@@ -129,7 +152,8 @@ fn crafted_frame_is_reinjected_on_a_link() {
     assert!(t.inject_link(l, a, &bytes));
     let msgs = run(&mut t, 20);
     assert!(
-        msgs.iter().any(|m| m.contains("10.0.0.2") && m.contains("is-at")),
+        msgs.iter()
+            .any(|m| m.contains("10.0.0.2") && m.contains("is-at")),
         "{}",
         msgs.join("\n")
     );
@@ -157,10 +181,18 @@ fn access_vlans_isolate_and_a_trunk_joins_them() {
     t.set_ip(c, 0, "10.0.0.3", "255.255.255.0");
     t.ping(a, "10.0.0.2");
     let msgs = run(&mut t, 80);
-    assert!(msgs.iter().any(|m| m.contains("reply from 10.0.0.2")), "trunk\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 10.0.0.2")),
+        "trunk\n{}",
+        msgs.join("\n")
+    );
     t.ping(a, "10.0.0.3");
     let msgs = run(&mut t, 30);
-    assert!(msgs.iter().all(|m| !m.contains("reply from 10.0.0.3")), "isolated\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().all(|m| !m.contains("reply from 10.0.0.3")),
+        "isolated\n{}",
+        msgs.join("\n")
+    );
 }
 
 #[test]
@@ -183,14 +215,22 @@ fn extended_acl_denies_then_permits_icmp() {
     assert!(t.set_access_group(r, 0, 100, "in"));
     t.ping(a, "10.2.0.2");
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("ACL denied")), "deny\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("ACL denied")),
+        "deny\n{}",
+        msgs.join("\n")
+    );
     assert!(msgs.iter().all(|m| !m.contains("reply from 10.2.0.2")));
     t.acl_clear(r, 100);
     assert!(t.acl_add(r, 100, true, 1, any, wild, any, wild, 0, 0));
     assert!(t.set_access_group(r, 0, 100, "in"));
     t.ping(a, "10.2.0.2");
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("reply from 10.2.0.2")), "permit\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 10.2.0.2")),
+        "permit\n{}",
+        msgs.join("\n")
+    );
 }
 
 #[test]
@@ -209,7 +249,12 @@ fn dhcp_relay_leases_across_a_router() {
     assert!(t.set_helper(r, 0, "10.2.0.10"));
     assert!(t.dhcp_client(pc, 0));
     let msgs = run(&mut t, 200);
-    assert_eq!(port_ip(&t, pc).as_deref(), Some("10.1.0.10"), "{}", msgs.join("\n"));
+    assert_eq!(
+        port_ip(&t, pc).as_deref(),
+        Some("10.1.0.10"),
+        "{}",
+        msgs.join("\n")
+    );
 }
 
 #[test]
@@ -225,15 +270,31 @@ fn ospf_installs_a_remote_prefix_and_static_wins() {
     assert!(t.ospf_network(r1, "10.0.0.0", "0.255.255.255", 0));
     assert!(t.ospf_network(r2, "10.0.0.0", "0.255.255.255", 0));
     let msgs = run(&mut t, 30);
-    let has = t.snapshot().devices.into_iter().find(|d| d.id == r2).unwrap().routes.iter().any(|r| r.prefix == "10.1.0.0" && r.proto == "O");
+    let has = t
+        .snapshot()
+        .devices
+        .into_iter()
+        .find(|d| d.id == r2)
+        .unwrap()
+        .routes
+        .iter()
+        .any(|r| r.prefix == "10.1.0.0" && r.proto == "O");
     assert!(has, "no OSPF route\n{}", msgs.join("\n"));
     t.ping(r2, "10.1.0.1");
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("reply from 10.1.0.1")), "ospf ping\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 10.1.0.1")),
+        "ospf ping\n{}",
+        msgs.join("\n")
+    );
     t.add_route(r2, "10.1.0.0", "255.255.255.0", "10.0.0.9", 0);
     t.ping(r2, "10.1.0.1");
     let msgs = run(&mut t, 30);
-    assert!(msgs.iter().all(|m| !m.contains("reply from 10.1.0.1")), "static should beat OSPF\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().all(|m| !m.contains("reply from 10.1.0.1")),
+        "static should beat OSPF\n{}",
+        msgs.join("\n")
+    );
 }
 
 fn nat_lab() -> (Topology, u32, u32, u32, u32) {
@@ -267,11 +328,29 @@ fn static_nat_makes_the_inside_host_answer_for_the_outside_address() {
     assert!(t.nat_static(r, "10.0.0.2", 0, 0, 0));
     t.ping(wan, "203.0.113.1");
     let msgs = run(&mut t, 80);
-    assert!(msgs.iter().any(|m| m.contains("PC: reply to 203.0.113.2")), "inside should answer\n{}", msgs.join("\n"));
-    assert!(msgs.iter().all(|m| !m.contains("R1: reply to")), "router should not answer\n{}", msgs.join("\n"));
-    assert!(msgs.iter().any(|m| m.contains("reply from 203.0.113.1")), "wan should see the outside address\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("PC: reply to 203.0.113.2")),
+        "inside should answer\n{}",
+        msgs.join("\n")
+    );
+    assert!(
+        msgs.iter().all(|m| !m.contains("R1: reply to")),
+        "router should not answer\n{}",
+        msgs.join("\n")
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 203.0.113.1")),
+        "wan should see the outside address\n{}",
+        msgs.join("\n")
+    );
     t.set_power(r, false);
-    let kept = t.snapshot().devices.into_iter().find(|d| d.id == r).unwrap().static_nat;
+    let kept = t
+        .snapshot()
+        .devices
+        .into_iter()
+        .find(|d| d.id == r)
+        .unwrap()
+        .static_nat;
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].inside, "10.0.0.2");
     let _ = pc;
@@ -283,10 +362,18 @@ fn port_forward_delivers_http_to_the_inside_server() {
     assert!(t.nat_static(r, "10.0.0.10", 6, 80, 80));
     assert!(t.http_get(wan, "203.0.113.1", 80));
     let msgs = run(&mut t, 120);
-    assert!(msgs.iter().any(|m| m.contains("HTTP 200")), "port forward\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("HTTP 200")),
+        "port forward\n{}",
+        msgs.join("\n")
+    );
     t.ping(wan, "203.0.113.1");
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("R1: reply to")), "port forward must leave ICMP on the router\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("R1: reply to")),
+        "port forward must leave ICMP on the router\n{}",
+        msgs.join("\n")
+    );
 }
 
 #[test]
@@ -312,13 +399,27 @@ fn traceroute_names_each_hop_then_the_destination() {
 
     assert!(t.ping_ttl(pc, "10.2.0.2", 1));
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("time exceeded from 10.1.0.1")), "ttl 1\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("time exceeded from 10.1.0.1")),
+        "ttl 1\n{}",
+        msgs.join("\n")
+    );
 
     assert!(t.ping_ttl(pc, "10.2.0.2", 2));
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("time exceeded from 10.0.0.2")), "ttl 2\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("time exceeded from 10.0.0.2")),
+        "ttl 2\n{}",
+        msgs.join("\n")
+    );
 
     assert!(t.ping_ttl(pc, "10.2.0.2", 3));
     let msgs = run(&mut t, 40);
-    assert!(msgs.iter().any(|m| m.contains("reply from 10.2.0.2")), "ttl 3\n{}", msgs.join("\n"));
+    assert!(
+        msgs.iter().any(|m| m.contains("reply from 10.2.0.2")),
+        "ttl 3\n{}",
+        msgs.join("\n")
+    );
 }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::events::SimEvent;
 use crate::frame::{Frame, Payload, BROADCAST_MAC};
+use crate::services::{local_l4, nat_egress, nat_ingress};
 use crate::{ip_str, mac_str, mask_bits, net_of, LinkId};
 
 pub type DeviceId = u32;
@@ -62,6 +63,12 @@ pub struct Acl {
     pub entries: Vec<Ace>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RouteProto {
+    Static,
+    Ospf,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
     pub prefix: [u8; 4],
@@ -70,8 +77,8 @@ pub struct Route {
     pub next_hop: [u8; 4],
     pub out_port: usize,
     pub connected: bool,
-    /// 0 = static, 1 = OSPF. Connected routes always beat both.
-    pub proto: u8,
+    /// Static beats OSPF at equal prefix length; connected always wins.
+    pub proto: RouteProto,
 }
 
 /// Frame held back while ARP resolves `resolve`.
@@ -80,6 +87,18 @@ pub struct Pending {
     pub frame: Frame,
     pub out_port: usize,
     pub resolve: [u8; 4],
+}
+
+impl Port {
+    /// VLAN an untagged access frame belongs to (never 0).
+    fn access_vid(&self) -> u16 {
+        self.access_vlan.max(1)
+    }
+
+    /// VLAN a trunk port tags natively (never 0).
+    fn native_vid(&self) -> u16 {
+        self.native_vlan.max(1)
+    }
 }
 
 #[derive(Debug)]
@@ -122,7 +141,14 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn new(id: DeviceId, name: String, kind: DeviceKind, x: f64, y: f64, macs: Vec<u64>) -> Self {
+    pub fn new(
+        id: DeviceId,
+        name: String,
+        kind: DeviceKind,
+        x: f64,
+        y: f64,
+        macs: Vec<u64>,
+    ) -> Self {
         Self {
             id,
             name,
@@ -174,8 +200,59 @@ impl Device {
         self.ports.iter().position(|p| p.link.is_none())
     }
 
-    fn owns_ip(&self, ip: [u8; 4]) -> bool {
+    pub(crate) fn owns_ip(&self, ip: [u8; 4]) -> bool {
         self.ports.iter().any(|p| p.ip.map(|(a, _)| a) == Some(ip))
+    }
+
+    /// First configured IPv4 address, for locally originated packets.
+    pub(crate) fn first_ip(&self) -> Option<[u8; 4]> {
+        self.ports.iter().find_map(|p| p.ip.map(|(a, _)| a))
+    }
+
+    /// MAC of the port that owns `ip`, for wire builders that need it early.
+    pub(crate) fn mac_of_ip(&self, ip: [u8; 4]) -> Option<u64> {
+        self.ports
+            .iter()
+            .find_map(|p| p.ip.filter(|(a, _)| *a == ip).map(|_| p.mac))
+    }
+
+    /// Replace the default route with one via `gw` out `out_port`.
+    pub(crate) fn set_default_route(&mut self, gw: [u8; 4], out_port: usize) {
+        self.routes.retain(|r| r.prefix != [0, 0, 0, 0]);
+        self.routes.push(Route {
+            prefix: [0, 0, 0, 0],
+            mask: [0, 0, 0, 0],
+            next_hop: gw,
+            out_port,
+            connected: false,
+            proto: RouteProto::Static,
+        });
+    }
+
+    /// Power off: drop all runtime state. Config (routes, IPs, NAT rules,
+    /// DNS records, OSPF networks, bound DHCP leases) survives.
+    pub(crate) fn power_off(&mut self) {
+        self.powered = false;
+        self.outbox.clear();
+        self.ext_out.clear();
+        self.pending.clear();
+        self.arp_cache.clear();
+        self.mac_table.clear();
+        self.flows.clear();
+        self.nat.clear();
+        self.ospf.reset();
+        if self
+            .dhcp
+            .as_ref()
+            .map(|c| c.state != crate::services::DhcpState::Bound)
+            .unwrap_or(false)
+        {
+            self.dhcp = None;
+        }
+    }
+
+    pub(crate) fn power_on(&mut self) {
+        self.powered = true;
     }
 
     /// Longest prefix, then connected, then static (proto 0) over OSPF (proto 1).
@@ -200,7 +277,7 @@ impl Device {
                         next_hop: dst,
                         out_port: i,
                         connected: true,
-                        proto: 0,
+                        proto: RouteProto::Static,
                     };
                     if best.as_ref().map(|b| take(&r, b)).unwrap_or(true) {
                         best = Some(r);
@@ -263,16 +340,16 @@ impl Device {
             ));
             self.outbox.push((route.out_port, frame));
         } else {
-            let arp = Frame {
-                src_mac: port.mac,
-                dst_mac: BROADCAST_MAC,
-                src_ip: port.ip.map(|(a, _)| a).unwrap_or(frame.src_ip),
-                dst_ip: next_hop,
-                ttl: 1,
-                payload: Payload::ArpRequest { target_ip: next_hop },
-                raw: None,
-                icmp_echo: None, vlan: 0,
-            };
+            let mut arp = Frame::ip(
+                port.ip.map(|(a, _)| a).unwrap_or(frame.src_ip),
+                next_hop,
+                1,
+                Payload::ArpRequest {
+                    target_ip: next_hop,
+                },
+            );
+            arp.src_mac = port.mac;
+            arp.dst_mac = BROADCAST_MAC;
             events.push(SimEvent::new(
                 tick,
                 Some(self.id),
@@ -313,7 +390,7 @@ impl Device {
     /// ext only: real wire bytes arrived from the emulated node — decode and
     /// push onto the link on `port`.
     pub fn ext_inject(&mut self, port: usize, bytes: &[u8], tick: u64, events: &mut Vec<SimEvent>) {
-        if self.kind != DeviceKind::Ext || port >= self.ports.len() {
+        if !self.powered || self.kind != DeviceKind::Ext || port >= self.ports.len() {
             return;
         }
         if let Some(frame) = crate::eth::decode(bytes) {
@@ -341,7 +418,10 @@ impl Device {
                 Some(self.id),
                 self.ports.get(in_port).and_then(|p| p.link),
                 "drop",
-                format!("{}: VLAN {} not allowed on port {}", self.name, frame.vlan, in_port),
+                format!(
+                    "{}: VLAN {} not allowed on port {}",
+                    self.name, frame.vlan, in_port
+                ),
             ));
             return;
         };
@@ -355,7 +435,13 @@ impl Device {
                 Some(self.id),
                 None,
                 "learn",
-                format!("{}: learned {} vlan {} on port {}", self.name, mac_str(frame.src_mac), vid, in_port),
+                format!(
+                    "{}: learned {} vlan {} on port {}",
+                    self.name,
+                    mac_str(frame.src_mac),
+                    vid,
+                    in_port
+                ),
             ));
         }
         let dst_is_mcast = ((frame.dst_mac >> 40) & 1) == 1 || frame.dst_mac == BROADCAST_MAC;
@@ -368,7 +454,13 @@ impl Device {
                     Some(self.id),
                     self.ports[out].link,
                     "forward",
-                    format!("{}: {} vlan {} -> port {}", self.name, frame.label(), vid, out),
+                    format!(
+                        "{}: {} vlan {} -> port {}",
+                        self.name,
+                        frame.label(),
+                        vid,
+                        out
+                    ),
                 ));
                 self.queue_sw(out, frame, vid);
             }
@@ -377,7 +469,9 @@ impl Device {
                     .ports
                     .iter()
                     .enumerate()
-                    .filter(|(i, p)| *i != in_port && p.link.is_some() && self.port_carries(*i, vid))
+                    .filter(|(i, p)| {
+                        *i != in_port && p.link.is_some() && self.port_carries(*i, vid)
+                    })
                     .map(|(i, _)| i)
                     .collect();
                 let n = ports.len();
@@ -389,7 +483,13 @@ impl Device {
                     Some(self.id),
                     None,
                     "flood",
-                    format!("{}: flooded {} vlan {} to {} ports", self.name, frame.label(), vid, n),
+                    format!(
+                        "{}: flooded {} vlan {} to {} ports",
+                        self.name,
+                        frame.label(),
+                        vid,
+                        n
+                    ),
                 ));
             }
         }
@@ -398,13 +498,13 @@ impl Device {
     fn ingress_vlan(&self, port: usize, tag: u16) -> Option<u16> {
         let p = self.ports.get(port)?;
         if !p.trunk {
-            let vid = p.access_vlan.max(1);
+            let vid = p.access_vid();
             if tag == 0 || tag == vid {
                 return Some(vid);
             }
             return None;
         }
-        let vid = if tag == 0 { p.native_vlan.max(1) } else { tag };
+        let vid = if tag == 0 { p.native_vid() } else { tag };
         if p.allowed.as_ref().map(|a| a.contains(&vid)).unwrap_or(true) {
             Some(vid)
         } else {
@@ -413,35 +513,55 @@ impl Device {
     }
 
     fn port_carries(&self, port: usize, vid: u16) -> bool {
-        let Some(p) = self.ports.get(port) else { return false };
+        let Some(p) = self.ports.get(port) else {
+            return false;
+        };
         if !p.trunk {
-            return p.access_vlan.max(1) == vid;
+            return p.access_vid() == vid;
         }
         p.allowed.as_ref().map(|a| a.contains(&vid)).unwrap_or(true)
     }
 
     fn queue_sw(&mut self, port: usize, mut frame: Frame, vid: u16) {
-        let tag = self.ports.get(port).map(|p| {
-            if !p.trunk {
-                0
-            } else if vid == p.native_vlan.max(1) {
-                0
-            } else {
-                vid
-            }
-        }).unwrap_or(0);
+        let tag = self
+            .ports
+            .get(port)
+            .map(|p| {
+                if !p.trunk {
+                    0
+                } else if vid == p.native_vid() {
+                    0
+                } else {
+                    vid
+                }
+            })
+            .unwrap_or(0);
         crate::eth::set_vlan(&mut frame, tag);
         self.outbox.push((port, frame));
     }
 
-    fn l3_receive(&mut self, mut frame: Frame, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
+    fn l3_receive(
+        &mut self,
+        mut frame: Frame,
+        in_port: usize,
+        tick: u64,
+        events: &mut Vec<SimEvent>,
+    ) {
         let port_mac = self.ports[in_port].mac;
         let ip_mcast = (frame.dst_mac >> 24) == 0x0100_5e;
-        if frame.dst_mac != port_mac && frame.dst_mac != BROADCAST_MAC && !(self.kind == DeviceKind::Router && ip_mcast) {
-            return; // not addressed to us
+        if frame.dst_mac != port_mac
+            && frame.dst_mac != BROADCAST_MAC
+            && !(self.kind == DeviceKind::Router && ip_mcast)
+        {
+            return;
         }
-        if matches!(frame.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded | Payload::Raw { ethertype: 0x0800 })
-            && !ip_allowed(self, self.ports[in_port].in_acl, &frame)
+        if matches!(
+            frame.payload,
+            Payload::IcmpEchoRequest
+                | Payload::IcmpEchoReply
+                | Payload::IcmpTimeExceeded
+                | Payload::Raw { ethertype: 0x0800 }
+        ) && !ip_allowed(self, self.ports[in_port].in_acl, &frame)
         {
             events.push(SimEvent::new(
                 tick,
@@ -461,16 +581,10 @@ impl Device {
         match frame.payload {
             Payload::ArpRequest { target_ip } => {
                 if self.owns_ip(target_ip) {
-                    let reply = Frame {
-                        src_mac: port_mac,
-                        dst_mac: frame.src_mac,
-                        src_ip: target_ip,
-                        dst_ip: frame.src_ip,
-                        ttl: 1,
-                        payload: Payload::ArpReply { target_ip },
-                raw: None,
-                icmp_echo: None, vlan: 0,
-                    };
+                    let mut reply =
+                        Frame::ip(target_ip, frame.src_ip, 1, Payload::ArpReply { target_ip });
+                    reply.src_mac = port_mac;
+                    reply.dst_mac = frame.src_mac;
                     events.push(SimEvent::new(
                         tick,
                         Some(self.id),
@@ -501,19 +615,14 @@ impl Device {
                 ));
             }
             Payload::IcmpEchoRequest => {
-                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                if nat_ingress(self, &mut frame, in_port) {
                     self.forward(frame, Some(in_port), tick, events);
                 } else if self.owns_ip(frame.dst_ip) {
-                    let reply = Frame {
-                        src_mac: port_mac,
-                        dst_mac: frame.src_mac,
-                        src_ip: frame.dst_ip,
-                        dst_ip: frame.src_ip,
-                        ttl: 64,
-                        payload: Payload::IcmpEchoReply,
-                raw: None,
-                icmp_echo: frame.icmp_echo.clone(), vlan: 0,
-                    };
+                    let mut reply =
+                        Frame::ip(frame.dst_ip, frame.src_ip, 64, Payload::IcmpEchoReply);
+                    reply.src_mac = port_mac;
+                    reply.dst_mac = frame.src_mac;
+                    reply.icmp_echo = frame.icmp_echo.clone();
                     events.push(SimEvent::new(
                         tick,
                         Some(self.id),
@@ -522,8 +631,8 @@ impl Device {
                         format!("{}: reply to {}", self.name, ip_str(frame.src_ip)),
                     ));
                     self.outbox.push((in_port, reply));
-                } else if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
-                    self.forward(frame, Some(in_port), tick, events);
+                } else {
+                    self.forward_if_router(frame, in_port, tick, events);
                 }
             }
             Payload::Raw { ethertype: 0x0800 } => {
@@ -531,17 +640,17 @@ impl Device {
                     // link-local OSPF; not routed
                 } else if is_mcast_ip(frame.dst_ip) {
                     // multicast stays on the link
-                } else if crate::services::nat_ingress(self, &mut frame, in_port) {
+                } else if nat_ingress(self, &mut frame, in_port) {
                     self.forward(frame, Some(in_port), tick, events);
-                } else if crate::services::local_l4(self, &frame, in_port, tick, events) {
+                } else if local_l4(self, &frame, in_port, tick, events) {
                     // answered or consumed (DHCP, DNS, TCP, UDP)
-                } else if self.kind == DeviceKind::Router {
-                    self.forward(frame, Some(in_port), tick, events);
+                } else {
+                    self.forward_if_router(frame, in_port, tick, events);
                 }
             }
             Payload::Raw { .. } => {}
             Payload::IcmpTimeExceeded => {
-                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                if nat_ingress(self, &mut frame, in_port) {
                     self.forward(frame, Some(in_port), tick, events);
                 } else if self.owns_ip(frame.dst_ip) {
                     events.push(SimEvent::new(
@@ -551,12 +660,12 @@ impl Device {
                         "exceed",
                         format!("{}: time exceeded from {}", self.name, ip_str(frame.src_ip)),
                     ));
-                } else if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
-                    self.forward(frame, Some(in_port), tick, events);
+                } else {
+                    self.forward_if_router(frame, in_port, tick, events);
                 }
             }
             Payload::IcmpEchoReply => {
-                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                if nat_ingress(self, &mut frame, in_port) {
                     self.forward(frame, Some(in_port), tick, events);
                 } else if self.owns_ip(frame.dst_ip) {
                     events.push(SimEvent::new(
@@ -571,29 +680,38 @@ impl Device {
                             frame.ttl
                         ),
                     ));
-                } else if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
-                    self.forward(frame, Some(in_port), tick, events);
+                } else {
+                    self.forward_if_router(frame, in_port, tick, events);
                 }
             }
         }
     }
 
-    fn forward(&mut self, mut frame: Frame, in_port: Option<usize>, tick: u64, events: &mut Vec<SimEvent>) {
+    /// Routers forward non-multicast frames they didn't answer.
+    fn forward_if_router(
+        &mut self,
+        frame: Frame,
+        in_port: usize,
+        tick: u64,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
+            self.forward(frame, Some(in_port), tick, events);
+        }
+    }
+
+    fn forward(
+        &mut self,
+        mut frame: Frame,
+        in_port: Option<usize>,
+        tick: u64,
+        events: &mut Vec<SimEvent>,
+    ) {
         frame.ttl = frame.ttl.saturating_sub(1);
         if frame.ttl == 0 {
             if let Some(port) = in_port {
                 if let Some((src, _)) = self.ports.get(port).and_then(|p| p.ip) {
-                    let exceeded = Frame {
-                        src_mac: 0,
-                        dst_mac: 0,
-                        src_ip: src,
-                        dst_ip: frame.src_ip,
-                        ttl: 64,
-                        payload: Payload::IcmpTimeExceeded,
-                        raw: None,
-                        icmp_echo: None,
-                        vlan: 0,
-                    };
+                    let exceeded = Frame::ip(src, frame.src_ip, 64, Payload::IcmpTimeExceeded);
                     self.emit_ip(exceeded, tick, events);
                 }
             }
@@ -606,20 +724,14 @@ impl Device {
             ));
             return;
         }
-        crate::services::nat_egress(self, &mut frame, in_port);
+        nat_egress(self, &mut frame, in_port);
         if let Some(raw) = frame.raw.as_mut() {
             crate::eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
         }
         self.emit_ip(frame, tick, events);
     }
 
-    fn flush_pending(
-        &mut self,
-        ip: [u8; 4],
-        mac: u64,
-        tick: u64,
-        events: &mut Vec<SimEvent>,
-    ) {
+    fn flush_pending(&mut self, ip: [u8; 4], mac: u64, tick: u64, events: &mut Vec<SimEvent>) {
         let mut i = 0;
         while i < self.pending.len() {
             if self.pending[i].resolve == ip {
@@ -646,19 +758,26 @@ fn is_mcast_ip(ip: [u8; 4]) -> bool {
 }
 
 pub(crate) fn wild_match(ip: [u8; 4], addr: [u8; 4], wild: [u8; 4]) -> bool {
-    ip.iter().zip(addr).zip(wild).all(|((&b, a), w)| (b ^ a) & !w == 0)
+    ip.iter()
+        .zip(addr)
+        .zip(wild)
+        .all(|((&b, a), w)| (b ^ a) & !w == 0)
 }
 
 /// Inbound/outbound extended ACL. No list, or a missing list, permits.
 pub(crate) fn ip_allowed(dev: &Device, acl: Option<u16>, frame: &Frame) -> bool {
     let Some(num) = acl else { return true };
-    let Some(list) = dev.acls.iter().find(|a| a.num == num) else { return true };
-    let (proto, sport, dport) = l4_of(frame);
+    let Some(list) = dev.acls.iter().find(|a| a.num == num) else {
+        return true;
+    };
+    let (proto, sport, dport, _icmp_id) = crate::services::l4_tuple(frame);
     for e in &list.entries {
         if e.proto != 0 && e.proto != proto {
             continue;
         }
-        if !wild_match(frame.src_ip, e.src, e.src_wild) || !wild_match(frame.dst_ip, e.dst, e.dst_wild) {
+        if !wild_match(frame.src_ip, e.src, e.src_wild)
+            || !wild_match(frame.dst_ip, e.dst, e.dst_wild)
+        {
             continue;
         }
         if e.sport.is_some() && e.sport != Some(sport) {
@@ -670,16 +789,4 @@ pub(crate) fn ip_allowed(dev: &Device, acl: Option<u16>, frame: &Frame) -> bool 
         return e.permit;
     }
     false
-}
-
-fn l4_of(frame: &Frame) -> (u8, u16, u16) {
-    if let Some(raw) = &frame.raw {
-        if let Some(v) = crate::eth::view_ip(raw) {
-            return (v.proto, v.sport, v.dport);
-        }
-    }
-    match frame.payload {
-        Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => (1, 0, 0),
-        _ => (0, 0, 0),
-    }
 }

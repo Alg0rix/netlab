@@ -90,7 +90,6 @@ export class IOSNode {
     this.worker?.postMessage({ type: 'conin', data: bytes });
   }
 
-  terminate() { this.kill(); }
 }
 
 /** Detect Dynamips platform from the ELF32 e_machine header (big-endian u16 at offset 18). */
@@ -118,7 +117,7 @@ export function detectIosPlatform(buf) {
  *      * Switch mode (`isSwitch: true`) installs 8-port Ethernet modules `PA-8E` in slots 1..2 (`Et1/0`–`Et1/7`, `Et2/0`–`Et2/7`) for IEEE 802.1D / IRB bridging.
  *      * Router mode uses `C7200-IO-FE` (or `C7200-IO-2FE` when 8 ports) + `PA-FE-TX` in slots 1..6. */
 export function iosArgs(nPorts = 4, opts = {}) {
-  const o = typeof opts === 'number' ? { ram: opts } : (opts || {});
+  const o = opts || {};
   const platform = o.platform || '7200';
   const ram = o.ram || 256;
   const isSwitch = !!o.isSwitch;

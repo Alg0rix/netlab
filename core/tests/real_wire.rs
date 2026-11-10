@@ -75,7 +75,9 @@ fn guest_ping_gets_a_reply_a_real_stack_accepts() {
     // ARP first, as the guest would
     t.ext_inject(guest, 0, &arp_request());
     let arp = run_until_ext(&mut t, 40);
-    let reply = arp.iter().find(|f| f.len() >= 42 && f[12..14] == [0x08, 0x06] && f[21] == 2)
+    let reply = arp
+        .iter()
+        .find(|f| f.len() >= 42 && f[12..14] == [0x08, 0x06] && f[21] == 2)
         .expect("guest gets an ARP reply");
     let host_mac = reply[22..28].to_vec();
     assert_eq!(&reply[0..6], &GUEST_MAC, "ARP reply addressed to the guest");
@@ -83,7 +85,9 @@ fn guest_ping_gets_a_reply_a_real_stack_accepts() {
     let payload: Vec<u8> = (0u8..28).collect();
     t.ext_inject(guest, 0, &echo_request(&host_mac, 0xbeef, 7, &payload));
     let out = run_until_ext(&mut t, 40);
-    let r = out.iter().find(|f| f.len() >= 42 && f[12..14] == [0x08, 0x00] && f[23] == 1)
+    let r = out
+        .iter()
+        .find(|f| f.len() >= 42 && f[12..14] == [0x08, 0x00] && f[23] == 1)
         .expect("guest gets an ICMP packet back");
 
     assert_eq!(&r[0..6], &GUEST_MAC, "addressed to the guest's MAC");
@@ -110,7 +114,10 @@ fn managed_switch_16_ports_and_l2_multicast_vlan_forwarding() {
     let sw = t.add_device(DeviceKind::Switch, "SW".into(), 0.0, 0.0);
 
     // Connect high-numbered NM-16ESW switchports (fa1/15 <-> SW <-> fa1/14)
-    assert!(t.add_link_ports(csw1, 15, sw, 0).is_some(), "Ext supports 16 ports (0..15)");
+    assert!(
+        t.add_link_ports(csw1, 15, sw, 0).is_some(),
+        "Ext supports 16 ports (0..15)"
+    );
     assert!(t.add_link_ports(sw, 1, csw2, 14).is_some());
 
     // 1. IEEE 802.1D STP BPDU multicast (01:80:c2:00:00:00) must flood through Switch
@@ -120,7 +127,10 @@ fn managed_switch_16_ports_and_l2_multicast_vlan_forwarding() {
     bpdu.extend_from_slice(&[0u8; 35]);
     t.ext_inject(csw1, 15, &bpdu);
     let rx = run_until_ext(&mut t, 40);
-    assert!(rx.iter().any(|f| f == &bpdu), "STP BPDU multicast forwarded intact to peer switch");
+    assert!(
+        rx.iter().any(|f| f == &bpdu),
+        "STP BPDU multicast forwarded intact to peer switch"
+    );
 
     // 2. Access ports (the default) drop a tag that is not VLAN 1.
     let mut vlan_frame = vec![0xff; 6];
@@ -129,13 +139,18 @@ fn managed_switch_16_ports_and_l2_multicast_vlan_forwarding() {
     vlan_frame.extend_from_slice(&[0u8; 28]);
     t.ext_inject(csw1, 15, &vlan_frame);
     let rx2 = run_until_ext(&mut t, 20);
-    assert!(rx2.iter().all(|f| f != &vlan_frame), "access VLAN 1 drops VLAN 10");
+    assert!(
+        rx2.iter().all(|f| f != &vlan_frame),
+        "access VLAN 1 drops VLAN 10"
+    );
 
     // 3. Trunk ports pass the same tag intact.
     assert!(t.set_switchport(sw, 0, true, 1, 1, ""));
     assert!(t.set_switchport(sw, 1, true, 1, 1, ""));
     t.ext_inject(csw1, 15, &vlan_frame);
     let rx3 = run_until_ext(&mut t, 40);
-    assert!(rx3.iter().any(|f| f == &vlan_frame), "802.1Q VLAN 10 frame forwarded intact on a trunk");
+    assert!(
+        rx3.iter().any(|f| f == &vlan_frame),
+        "802.1Q VLAN 10 frame forwarded intact on a trunk"
+    );
 }
-

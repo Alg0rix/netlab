@@ -41,7 +41,10 @@ impl NetLab {
 
     /// Connect specific ports; -1 if a port is missing or busy.
     pub fn add_link_ports(&mut self, a: u32, pa: usize, b: u32, pb: usize) -> i32 {
-        self.topo.add_link_ports(a, pa, b, pb).map(|l| l as i32).unwrap_or(-1)
+        self.topo
+            .add_link_ports(a, pa, b, pb)
+            .map(|l| l as i32)
+            .unwrap_or(-1)
     }
 
     pub fn remove_link(&mut self, id: u32) {
@@ -72,7 +75,12 @@ impl NetLab {
             js_sys::Reflect::set(&o, &"link".into(), &(c.link as f64).into()).ok();
             js_sys::Reflect::set(&o, &"tick".into(), &(c.tick as f64).into()).ok();
             js_sys::Reflect::set(&o, &"from".into(), &(c.from as f64).into()).ok();
-            js_sys::Reflect::set(&o, &"bytes".into(), &js_sys::Uint8Array::from(&c.bytes[..]).into()).ok();
+            js_sys::Reflect::set(
+                &o,
+                &"bytes".into(),
+                &js_sys::Uint8Array::from(&c.bytes[..]).into(),
+            )
+            .ok();
             out.push(&o);
         }
         out
@@ -137,8 +145,12 @@ impl NetLab {
             let o = js_sys::Object::new();
             js_sys::Reflect::set(&o, &"dev".into(), &(dev as f64).into()).ok();
             js_sys::Reflect::set(&o, &"port".into(), &(port as f64).into()).ok();
-            js_sys::Reflect::set(&o, &"bytes".into(), &js_sys::Uint8Array::from(&bytes[..]).into())
-                .ok();
+            js_sys::Reflect::set(
+                &o,
+                &"bytes".into(),
+                &js_sys::Uint8Array::from(&bytes[..]).into(),
+            )
+            .ok();
             out.push(&o);
         }
         out
@@ -147,8 +159,17 @@ impl NetLab {
     /// Link impairment. `delay` and `jitter` are ticks (1 ms in Realtime).
     /// `loss` is a percent. `mtu` 0 means no limit.
     /// `speed` is "10M" | "100M" | "1G" | "10G" | "WAN".
-    pub fn set_link_impair(&mut self, id: u32, delay: u32, jitter: u32, loss: u8, mtu: u16, speed: &str) -> bool {
-        self.topo.set_link_impair(id, delay, jitter, loss, mtu, speed)
+    pub fn set_link_impair(
+        &mut self,
+        id: u32,
+        delay: u32,
+        jitter: u32,
+        loss: u8,
+        mtu: u16,
+        speed: &str,
+    ) -> bool {
+        self.topo
+            .set_link_impair(id, delay, jitter, loss, mtu, speed)
     }
 
     /// Place a raw Ethernet frame onto a link, travelling away from `from`.
@@ -194,29 +215,48 @@ impl NetLab {
     }
 
     /// `proto` is "ip" (1:1) or "tcp" / "udp" (static port forward).
-    pub fn nat_static(&mut self, dev: u32, inside: &str, proto: &str, inside_port: u16, outside_port: u16) -> bool {
-        let proto = match proto {
-            "tcp" => 6,
-            "udp" => 17,
-            "ip" | "" => 0,
-            _ => return false,
+    pub fn nat_static(
+        &mut self,
+        dev: u32,
+        inside: &str,
+        proto: &str,
+        inside_port: u16,
+        outside_port: u16,
+    ) -> bool {
+        let proto = match nat_proto(proto) {
+            Some(p) => p,
+            None => return false,
         };
-        self.topo.nat_static(dev, inside, proto, inside_port, outside_port)
+        self.topo
+            .nat_static(dev, inside, proto, inside_port, outside_port)
     }
 
-    pub fn nat_static_clear(&mut self, dev: u32, inside: &str, proto: &str, outside_port: u16) -> bool {
-        let proto = match proto {
-            "tcp" => 6,
-            "udp" => 17,
-            "ip" | "" => 0,
-            _ => return false,
+    pub fn nat_static_clear(
+        &mut self,
+        dev: u32,
+        inside: &str,
+        proto: &str,
+        outside_port: u16,
+    ) -> bool {
+        let proto = match nat_proto(proto) {
+            Some(p) => p,
+            None => return false,
         };
         self.topo.nat_static_clear(dev, inside, proto, outside_port)
     }
 
     /// `mode` is "access" or "trunk". `allowed` is "" / "all" or "1,10,20".
-    pub fn set_switchport(&mut self, dev: u32, port: usize, mode: &str, access: u16, native: u16, allowed: &str) -> bool {
-        self.topo.set_switchport(dev, port, mode == "trunk", access, native, allowed)
+    pub fn set_switchport(
+        &mut self,
+        dev: u32,
+        port: usize,
+        mode: &str,
+        access: u16,
+        native: u16,
+        allowed: &str,
+    ) -> bool {
+        self.topo
+            .set_switchport(dev, port, mode == "trunk", access, native, allowed)
     }
 
     /// Empty `ip` clears the helper.
@@ -245,7 +285,9 @@ impl NetLab {
             "ip" | "any" => 0,
             _ => return false,
         };
-        self.topo.acl_add(dev, num, permit, proto, src, src_wild, dst, dst_wild, sport, dport)
+        self.topo.acl_add(
+            dev, num, permit, proto, src, src_wild, dst, dst_wild, sport, dport,
+        )
     }
 
     pub fn acl_clear(&mut self, dev: u32, num: u16) {
@@ -263,7 +305,8 @@ impl NetLab {
 
     /// `area` < 0 clears `ip ospf` on that interface.
     pub fn ospf_interface(&mut self, dev: u32, port: usize, area: i32) -> bool {
-        self.topo.ospf_interface(dev, port, if area < 0 { None } else { Some(area as u32) })
+        self.topo
+            .ospf_interface(dev, port, if area < 0 { None } else { Some(area as u32) })
     }
 
     pub fn ospf_clear(&mut self, dev: u32) {
@@ -274,4 +317,14 @@ impl NetLab {
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.topo.snapshot()).unwrap_or_else(|_| "{}".into())
     }
+}
+
+/// "ip"/"" → 0 (any), "tcp" → 6, "udp" → 17 — the proto vocabulary nat_static accepts.
+fn nat_proto(s: &str) -> Option<u8> {
+    Some(match s {
+        "tcp" => 6,
+        "udp" => 17,
+        "ip" | "" => 0,
+        _ => return None,
+    })
 }

@@ -2,13 +2,15 @@
 // routers/switches a Cisco-flavoured one (with abbreviations: "sh ip int br").
 
 import { TICK_MS } from './capture.js';
+import { lenMask, maskLen } from './util.js';
 
 const WORDS = ['show', 'interface', 'brief', 'route', 'arp', 'address', 'address-table', 'mac',
   'hostname', 'ping', 'clear', 'help', 'history', 'running-config', 'gateway',
   'dhcp', 'dns', 'nat', 'inside', 'outside', 'server', 'nslookup', 'curl',
   'switchport', 'mode', 'access', 'vlan', 'trunk', 'native', 'allowed',
   'access-list', 'access-group', 'permit', 'deny', 'helper-address', 'eq',
-  'ospf', 'traffic', 'network', 'area', 'tcp', 'udp', 'icmp', 'traceroute', 'source', 'static'];
+  'ospf', 'traffic', 'network', 'area', 'tcp', 'udp', 'icmp', 'traceroute', 'source', 'static',
+  'ip', 'no', 'in', 'out', 'any', 'all', 'on', 'off', 'reload', 'set', 'pcname', 'nc'];
 
 function expand(tok) {
   if (WORDS.includes(tok)) return tok;
@@ -17,8 +19,7 @@ function expand(tok) {
 }
 
 const isIp = s => /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split('.').every(n => +n <= 255);
-const lenToMask = n => [0, 1, 2, 3].map(i => { const b = Math.max(0, Math.min(8, n - i * 8)); return (0xff << (8 - b)) & 0xff; }).join('.');
-const maskToLen = m => m.split('.').reduce((s, o) => s + ((+o).toString(2).match(/1/g)?.length ?? 0), 0);
+
 const pad = (s, n) => String(s).padEnd(n);
 
 /** parse "1.2.3.4/24" or "1.2.3.4 255.255.255.0" from tokens → {ip, mask, used} */
@@ -27,7 +28,7 @@ function parseAddr(toks) {
   if (!a) return null;
   if (a.includes('/')) {
     const [ip, len] = a.split('/');
-    if (isIp(ip) && +len >= 0 && +len <= 32) return { ip, mask: lenToMask(+len), used: 1 };
+    if (isIp(ip) && +len >= 0 && +len <= 32) return { ip, mask: lenMask(+len), used: 1 };
     return null;
   }
   if (isIp(a) && b && isIp(b)) return { ip: a, mask: b, used: 2 };
@@ -194,7 +195,7 @@ export class SimShell {
     if (!raw) return;
     this.history.push(raw);
     if (!this.dev) return this.write('% node was deleted\n', 'err');
-    const toks = raw.split(/\s+/).map((t, i) => (i < 4 ? expand(t.toLowerCase()) : t));
+    const toks = raw.split(/\s+/).map(t => expand(t.toLowerCase()));
     const head = toks[0];
     const readOnly = ['show', 'ping', 'traceroute', 'help', 'history', '?', 'traffic', 'nslookup', 'curl', 'nc', 'arp'].includes(head)
       || (head === 'clear' && !toks[1]);
@@ -615,7 +616,7 @@ export class SimShell {
       const p = ps[0] ?? d.ports[0];
       this.write([
         `NAME        : ${d.name}`,
-        `IP/MASK     : ${p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0'}`,
+        `IP/MASK     : ${p.ip ? `${p.ip}/${maskLen(p.mask)}` : '0.0.0.0/0'}`,
         `GATEWAY     : ${gw ?? '0.0.0.0'}`,
         `MAC         : ${p.mac}`,
         `DNS         : ${d.resolver || '0.0.0.0'}`,
@@ -626,7 +627,7 @@ export class SimShell {
     }
     const rows = [`NAME        : ${d.name}`, `GATEWAY     : ${gw ?? '0.0.0.0'}`, `DNS         : ${d.resolver || '0.0.0.0'}`, `DHCP        : ${d.dhcp || 'off'}`];
     ps.forEach((p, i) => {
-      rows.push(`${pad(this.app.ifName(this.id, i).toUpperCase(), 12)}: ${pad(p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0', 18)} ${p.mac}  (${this.linkState(i)})`);
+      rows.push(`${pad(this.app.ifName(this.id, i).toUpperCase(), 12)}: ${pad(p.ip ? `${p.ip}/${maskLen(p.mask)}` : '0.0.0.0/0', 18)} ${p.mac}  (${this.linkState(i)})`);
     });
     this.write(rows.join('\n') + '\n');
   }
@@ -642,7 +643,7 @@ export class SimShell {
     const ps = this.ports();
     const out = [`${pad('Interface', 12)}${pad('IP-Address', 18)}${pad('Status', 24)}MAC`];
     ps.forEach((p, i) => out.push(
-      `${pad(this.app.ifName(this.id, i), 12)}${pad(p.ip ? `${p.ip}/${maskToLen(p.mask)}` : 'unassigned', 18)}${pad(this.linkState(i), 24)}${p.mac}`));
+      `${pad(this.app.ifName(this.id, i), 12)}${pad(p.ip ? `${p.ip}/${maskLen(p.mask)}` : 'unassigned', 18)}${pad(this.linkState(i), 24)}${p.mac}`));
     this.write(out.join('\n') + '\n');
   }
 
@@ -654,15 +655,15 @@ export class SimShell {
     ps.forEach((p, i) => {
       if (!p.ip) return;
       const net = fromN((toN(p.ip) & toN(p.mask)) >>> 0);
-      out.push(`C     ${net}/${maskToLen(p.mask)} is directly connected, ${this.app.ifName(this.id, i)}`);
+      out.push(`C     ${net}/${maskLen(p.mask)} is directly connected, ${this.app.ifName(this.id, i)}`);
     });
     let si = 0;
     d.routes.forEach(r => {
       const via = ` via ${r.next_hop}, ${this.app.ifName(this.id, r.out_port)}`;
-      if (r.proto === 'O') { out.push(`O     ${r.prefix}/${maskToLen(r.mask)}${via}`); return; }
+      if (r.proto === 'O') { out.push(`O     ${r.prefix}/${maskLen(r.mask)}${via}`); return; }
       si++;
       const code = r.prefix === '0.0.0.0' && r.mask === '0.0.0.0' ? 'S*' : 'S ';
-      out.push(`${code}    ${r.prefix}/${maskToLen(r.mask)}${via}   [${si}]`);
+      out.push(`${code}    ${r.prefix}/${maskLen(r.mask)}${via}   [${si}]`);
     });
     if (out.length === 1) out.push('(empty — no addresses configured)');
     this.write(out.join('\n') + '\n');

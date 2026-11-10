@@ -1,5 +1,5 @@
+use crate::frame::Frame;
 use crate::DeviceId;
-use crate::Frame;
 
 pub type LinkId = u32;
 
@@ -37,6 +37,25 @@ impl LinkSpeed {
             "WAN" | "SERIAL" | "T1" => LinkSpeed::Wan,
             _ => LinkSpeed::G1,
         }
+    }
+
+    fn bit_rate(self) -> u64 {
+        match self {
+            LinkSpeed::M10 => 10_000_000,
+            LinkSpeed::M100 => 100_000_000,
+            LinkSpeed::Wan => 1_544_000,
+            LinkSpeed::G1 | LinkSpeed::G10 => 0,
+        }
+    }
+
+    /// Serialization delay in ticks (1 tick = 1 ms in Realtime) for `len`
+    /// wire bytes. Instant at 1G and up.
+    pub fn serial_ticks(self, len: usize) -> u32 {
+        let bps = self.bit_rate();
+        if len == 0 || bps == 0 {
+            return 0;
+        }
+        ((len as u64 * 8 * 1000) / bps).max(1) as u32
     }
 }
 

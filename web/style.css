@@ -32,6 +32,8 @@
   --p-stp: #ff7ab6;
   --p-vlan: #7cc4ff;
   --p-route: #f2c14b;
+  --p-ospf: #f2c14b;
+  --p-raw: #8a94a6;
   --p-l2: #a58bff;
   --p-ext: #2fd0c0;
   --p-drop: #ff5d5d;
@@ -73,6 +75,8 @@
   --p-stp: #c43b78;
   --p-vlan: #2d6fd1;
   --p-route: #c58a0d;
+  --p-ospf: #c9960d;
+  --p-raw: #6b7280;
   --p-l2: #7552e0;
   --p-ext: #0f9e90;
   --p-drop: #d93838;

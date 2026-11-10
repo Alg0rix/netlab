@@ -6,6 +6,7 @@ import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame,
 import { SimShell } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
 import { emitLab, parseLab } from './labyaml.js';
+import { toast, modal, confirmBox, ask, openMenu, closeMenu, ico, hydrateIcons } from './ui.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
@@ -13,14 +14,7 @@ import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } fro
 await init();
 await preloadIcons();
 
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
-const ico = name => `<i data-i="${name}">${UI[name] ?? ''}</i>`;
-const hydrateIcons = (root = document) => $$('i[data-i]', root).forEach(i => { if (!i.innerHTML) i.innerHTML = UI[i.dataset.i] ?? ''; });
-const isTyping = e => e.target.closest?.('input, textarea, select, [contenteditable], .term');
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+import { $, $$, esc, h, isTyping, clamp, b64, unb64, maskLen, lenMask, PROTO_NAME } from './util.js';
 
 let lab = new NetLab();
 window.netlab = { get lab() { return lab; }, get view() { return { ...view }; }, get shapes() { return shapes; }, emus: null, meta: null };
@@ -98,8 +92,8 @@ function refresh() {
 
 const tplOf = id => meta.get(id)?.tpl ?? byId.get(id)?.kind ?? 'pc';
 const ifName = (id, i) => {
-  if (tplOf(id) === 'ios-sw' && meta.get(id)?.iosPlatform === '7200') return `e${1 + (i >> 3)}/${i & 7}`;
-  return ifNameFor(tplOf(id), i);
+  if (tplOf(id) === 'ios-sw' && meta.get(id)?.iosPlatform !== '7200') return `fa1/${i}`; // NM-16ESW
+  return ifNameFor(tplOf(id), i, portCount(id));
 };
 const portCount = id => {
   const d = byId.get(id);
@@ -150,11 +144,6 @@ const toWorld = (sx, sy) => ({ x: (sx - view.x) / view.z, y: (sy - view.y) / vie
 const toScreen = (wx, wy) => ({ x: wx * view.z + view.x, y: wy * view.z + view.y });
 const snapV = v => (P.grid ? Math.round(v / 20) * 20 : v);
 
-function toast(msg, kind = '') {
-  const t = h(`<div class="toast ${kind}">${esc(msg)}</div>`);
-  $('#toasts').append(t);
-  setTimeout(() => t.remove(), kind === 'err' ? 5000 : 2800);
-}
 
 /* ════════════════════════════ persistence ════════════════════════════ */
 
@@ -228,7 +217,7 @@ function restore(data) {
     if (n.startupBoot) m.startupBoot = true;
     for (const a of n.acls ?? []) {
       for (const e of a.entries ?? []) {
-        const proto = { 1: 'icmp', 6: 'tcp', 17: 'udp' }[e.proto] || (typeof e.proto === 'string' ? e.proto : 'ip');
+        const proto = PROTO_NAME[e.proto] || (typeof e.proto === 'string' ? e.proto : 'ip');
         lab.acl_add(id, a.num, !!e.permit, proto, e.src, e.src_wild, e.dst, e.dst_wild, e.sport || 0, e.dport || 0);
       }
     }
@@ -459,7 +448,7 @@ async function startNode(id) {
   if (node.state !== 'stopped') return;
   let name = meta.get(id).image;
   if (!name || !(await images.get(name))) {
-    name = await chooseImage(id);
+    name = await imageManager(id);
     if (!name) return;
   }
   const rec = await images.get(name);
@@ -481,7 +470,7 @@ async function startVM(id) {
   const saved = await disks.get(m.uid);
   // an installed VM boots from its own disk; the image is only needed the first time
   if (!saved && (!name || !(await images.get(name)))) {
-    name = await chooseImage(id);
+    name = await imageManager(id);
     if (!name) return;
   }
   const rec = name ? await images.get(name) : null;
@@ -599,6 +588,7 @@ function catOf(ev) {
   switch (ev.kind) {
     case 'arp_req': case 'arp_rep': return 'ARP';
     case 'echo_req': case 'echo_rep': case 'deliver': case 'exceed': return 'ICMP';
+    case 'ospf': return 'SYS';
     case 'learn': case 'flood': case 'forward': return 'L2';
     case 'dhcp': case 'dns': case 'tcp': case 'http': case 'udp': return 'L4';
     case 'ext_tx': case 'ext_rx': return 'EXT';
@@ -735,7 +725,7 @@ resize();
 
 function readColors() {
   const cs = getComputedStyle(document.documentElement);
-  for (const k of ['canvas', 'panel', 'panel-2', 'line', 'line-2', 'text', 'text-2', 'muted', 'accent', 'accent-soft', 'ok', 'warn', 'bad', 'grid-dot', 'grid-major', 'link', 'p-arp', 'p-icmp', 'p-l2', 'p-ext', 'p-drop', 'p-ok', 'p-tcp', 'p-udp', 'p-dhcp', 'p-dns', 'p-stp', 'p-vlan', 'p-route'])
+  for (const k of ['canvas', 'panel', 'panel-2', 'line', 'line-2', 'text', 'text-2', 'muted', 'accent', 'accent-soft', 'ok', 'warn', 'bad', 'grid-dot', 'grid-major', 'link', 'p-arp', 'p-icmp', 'p-l2', 'p-ext', 'p-drop', 'p-ok', 'p-tcp', 'p-udp', 'p-dhcp', 'p-dns', 'p-stp', 'p-vlan', 'p-route', 'p-ospf', 'p-raw'])
     C[k] = cs.getPropertyValue('--' + k).trim();
 }
 
@@ -1400,72 +1390,10 @@ async function editNote(n) {
   if (text != null) { n.text = text; dirty(); }
 }
 
-/** modal text input → Promise<string|null> */
-function ask(title, value = '', { multiline = false, ok = 'OK', placeholder = '' } = {}) {
-  return new Promise(res => {
-    const body = h(`<div>${multiline
-      ? `<textarea class="field" rows="5" style="height:auto;padding:8px;font-family:var(--font);resize:vertical" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
-      : `<input class="field" style="height:32px" value="${esc(value)}" placeholder="${esc(placeholder)}" spellcheck="false" />`}</div>`);
-    const m = modal(title, body, `<button class="btn" data-c>Cancel</button><button class="btn primary" data-ok>${esc(ok)}</button>`);
-    let out = null;
-    m._onclose = () => res(out);
-    const f = $('.field', body);
-    const done = () => { out = f.value; m.close(); };
-    $('[data-ok]', m).onclick = done;
-    $('[data-c]', m).onclick = () => m.close();
-    f.addEventListener('keydown', e => { if (e.key === 'Enter' && (!multiline || e.ctrlKey || e.metaKey)) { e.preventDefault(); done(); } });
-    setTimeout(() => { f.focus(); f.select?.(); }, 0);
-  });
-}
-function confirmBox(title, text, ok = 'Continue', danger = false) {
-  return new Promise(res => {
-    const m = modal(title, `<p style="margin:0;color:var(--text-2)">${esc(text)}</p>`,
-      `<button class="btn" data-c>Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" data-ok>${esc(ok)}</button>`);
-    let out = false;
-    m._onclose = () => res(out);
-    $('[data-ok]', m).onclick = () => { out = true; m.close(); };
-    $('[data-c]', m).onclick = () => m.close();
-    setTimeout(() => $('[data-ok]', m).focus(), 0);
-  });
-}
+
 
 /* ════════════════════════════ menus ════════════════════════════ */
 
-const ctxEl = $('#ctx');
-let menuOnClose = null;
-
-function openMenu(items, x, y, onClose) {
-  ctxEl.innerHTML = '';
-  for (const it of items) {
-    if (it === '-') { ctxEl.append(h('<hr>')); continue; }
-    if (it.header) { ctxEl.append(h(`<div class="mh">${esc(it.header)}</div>`)); continue; }
-    const b = h(`<button class="mi ${it.danger ? 'danger' : ''} ${it.cls ?? ''}" role="menuitem" ${it.disabled ? 'disabled' : ''}>
-      ${it.icon ? ico(it.icon) : it.art ? `<span style="width:18px;height:18px;display:inline-flex">${iconSVG(it.art)}</span>` : '<i data-i></i>'}
-      <span>${it.html ?? esc(it.label)}</span>${it.kbd ? `<kbd>${esc(it.kbd)}</kbd>` : ''}${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ''}</button>`);
-    b.onclick = () => { closeMenu(); it.run?.(); };
-    ctxEl.append(b);
-  }
-  ctxEl.hidden = false;
-  const r = ctxEl.getBoundingClientRect();
-  ctxEl.style.left = clamp(x, 4, innerWidth - r.width - 4) + 'px';
-  ctxEl.style.top = clamp(y, 4, innerHeight - r.height - 4) + 'px';
-  menuOnClose = onClose ?? null;
-  ctxEl.querySelector('.mi:not(:disabled)')?.focus();
-}
-function closeMenu() {
-  if (ctxEl.hidden) return;
-  ctxEl.hidden = true;
-  $$('#menubar > button').forEach(b => b.classList.remove('open'));
-  const f = menuOnClose; menuOnClose = null; f?.();
-}
-addEventListener('pointerdown', e => { if (!ctxEl.contains(e.target) && !e.target.closest('#menubar')) closeMenu(); }, true);
-ctxEl.addEventListener('keydown', e => {
-  const items = $$('.mi:not(:disabled)', ctxEl);
-  const i = items.indexOf(document.activeElement);
-  if (e.key === 'ArrowDown') { items[(i + 1) % items.length]?.focus(); e.preventDefault(); }
-  if (e.key === 'ArrowUp') { items[(i - 1 + items.length) % items.length]?.focus(); e.preventDefault(); }
-  if (e.key === 'Escape') closeMenu();
-});
 
 function pickPort(dev, x, y, done) {
   const d = byId.get(dev);
@@ -1511,7 +1439,7 @@ function contextMenu(hit, x, y, w) {
       ...(isExt ? [] : [{ label: 'Reload', icon: 'reload', run: () => reloadNode(d.id), disabled: st !== 'running' }]),
       { label: 'Console', icon: 'term', kbd: 'dbl-click', run: () => openConsole(d.id) },
       '-',
-      ...(isExt ? [{ label: 'Choose image…', icon: 'image', run: () => chooseImage(d.id) }] : []),
+      ...(isExt ? [{ label: 'Choose image…', icon: 'image', run: () => imageManager(d.id) }] : []),
       { label: 'Rename', icon: 'tag', kbd: 'F2', run: () => focusRename() },
       { label: 'Duplicate', icon: 'plus', kbd: 'Ctrl+D', run: duplicateSelection },
       { label: 'Capture on all links', icon: 'capture', run: () => snap.links.filter(l => l.a === d.id || l.b === d.id).forEach(l => setCapture(l.id, true)), disabled: !d.ports.some(p => p.link != null) },
@@ -1639,9 +1567,6 @@ for (const name of Object.keys(MENUS)) {
 
 /* ════════════════════════════ file ops ════════════════════════════ */
 
-const b64 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
-const unb64 = str => Uint8Array.from(atob(str), c => c.charCodeAt(0));
-
 function saveYaml() {
   const name = (labName || 'lab').replace(/[^\w.-]+/g, '_');
   download(new Blob([emitLab(serialize())], { type: 'application/yaml' }), `${name}.netlab.yaml`);
@@ -1719,21 +1644,6 @@ function exportPng() {
 
 /* ════════════════════════════ modals ════════════════════════════ */
 
-function modal(title, body, foot = '', cls = '') {
-  const m = h(`<div class="modal-bg"><div class="modal ${cls}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
-    <header>${esc(title)}<span class="spacer"></span><button class="icon-btn sm" data-x>${UI.x}</button></header>
-    <div class="mbody"></div>${foot ? `<footer>${foot}</footer>` : ''}</div></div>`);
-  $('.mbody', m).append(typeof body === 'string' ? h(`<div>${body}</div>`) : body);
-  const close = () => { m.remove(); m._onclose?.(); };
-  m.addEventListener('pointerdown', e => { if (e.target === m) close(); });
-  $('[data-x]', m).onclick = close;
-  m.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
-  $('#modal-root').append(m);
-  hydrateIcons(m);
-  m.close = close;
-  setTimeout(() => $('button, input', $('.mbody', m))?.focus(), 0);
-  return m;
-}
 
 function templateMarketplace(initialTab = 'all', openSave = false) {
   let activeLevel = initialTab;
@@ -2019,7 +1929,6 @@ function imageManager(forDev = null) {
     draw();
   });
 }
-const chooseImage = id => imageManager(id);
 
 function shortcuts() {
   const rows = [
@@ -2169,7 +2078,7 @@ function nodeInspector(id) {
       <dt>Adapters</dt><dd>${esc(adapters)}</dd></dl>
       ${csw ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>NM-16ESW (c3725)</b>: <span class="mono">vlan database</span> → <span class="mono">vlan 10</span>, <span class="mono">interface fa1/0</span> → <span class="mono">switchport mode access</span> / <span class="mono">trunk</span>, <span class="mono">spanning-tree vlan 1</span>.<br><b>PA-8E (c7200)</b>: <span class="mono">bridge irb</span>, <span class="mono">bridge 1 protocol ieee</span>, <span class="mono">interface e1/0</span> → <span class="mono">bridge-group 1</span>.</p>` : ''}
       ${crossOriginIsolated ? '' : '<p class="muted" style="margin-top:8px">This page is not cross-origin isolated, so IOS cannot boot here. Serve with COOP/COEP (<span class="mono">make serve</span>).</p>'}</div>`);
-    $('[data-img]', s).onclick = () => chooseImage(id);
+    $('[data-img]', s).onclick = () => imageManager(id);
     root.append(s);
 
     const when = m.nvSaved ? new Date(m.nvSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
@@ -2349,7 +2258,7 @@ function vmSettings(id, d, st) {
       <p class="muted" style="margin:0 0 8px;font-size:12px">Changes are saved a few seconds after the guest writes, and on Stop. VM disks are not included in lab files.</p>
       ${when ? `<button class="btn sm danger" data-reset ${running ? 'disabled title="Stop the VM first"' : ''}>${ico('trash')}Reset disk</button>` : ''}
     </div></div>`);
-  $('[data-img]', root).onclick = () => chooseImage(id);
+  $('[data-img]', root).onclick = () => imageManager(id);
   const set = (k, v) => { m[k] = v; dirty(); };
   $('[data-ram]', root).onchange = e => set('ram', +e.target.value);
   $('[data-disk]', root).onchange = e => set('diskMB', +e.target.value);
@@ -2535,7 +2444,6 @@ function relaySection(id, d) {
   return s;
 }
 
-const PROTO_NAME = { 1: 'icmp', 6: 'tcp', 17: 'udp' };
 function aclSection(id, d) {
   const n = portCount(id);
   const lines = [];
@@ -2619,8 +2527,6 @@ function ospfSection(id, d) {
   return s;
 }
 
-function maskLen(m) { return (m ?? '').split('.').reduce((s, o) => s + ((+o).toString(2).match(/1/g)?.length ?? 0), 0); }
-function lenMask(n) { return [0, 1, 2, 3].map(i => { const b = clamp(n - i * 8, 0, 8); return (0xff << (8 - b)) & 0xff; }).join('.'); }
 function outPortFor(d, ip) {
   const N = s => s.split('.').reduce((a, o) => ((a << 8) | +o) >>> 0, 0);
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return -1;
@@ -3000,11 +2906,10 @@ function capturePane() {
   capWrap = $('.tbl-wrap', pane);
   capTree = $('.cap-tree', pane);
   capHex = $('.cap-hex', pane);
-  capShown = 0;
   queueMicrotask(() => { renderCapture(); renderPacket(); });
   return pane;
 }
-let capTbody, capWrap, capTree, capHex, capShown = 0;
+let capTbody, capWrap, capTree, capHex;
 function renderCapture() {
   if (!capTbody?.isConnected) { if (dockTab === 'capture') renderDockBody(); return; }
   const s = caps.get(capLink);
@@ -3453,29 +3358,7 @@ addEventListener('blur', () => { spaceDown = false; });
 /* ════════════════════════════ demo ════════════════════════════ */
 
 function DEMO() {
-  const N = (id, tpl, name, x, y, ports = [], routes = []) => ({ id, tpl, name, x, y, ports, routes });
-  const ip = (a, len = 24) => ({ ip: a, mask: lenMask(len) });
-  const gw = g => [{ prefix: '0.0.0.0', mask: '0.0.0.0', next_hop: g, out_port: 0 }];
-  return {
-    format: 'netlab', version: 1, name: 'Branch office',
-    nodes: [
-      N(1, 'router', 'R1', 460, 120, [ip('192.168.10.1'), ip('192.168.20.1'), ip('10.0.0.1', 30)]),
-      N(2, 'switch', 'SW1', 280, 280),
-      N(3, 'switch', 'SW2', 640, 280),
-      N(4, 'pc', 'PC1', 140, 440, [ip('192.168.10.11')], gw('192.168.10.1')),
-      N(5, 'pc', 'PC2', 280, 440, [ip('192.168.10.12')], gw('192.168.10.1')),
-      N(6, 'server', 'Web1', 420, 440, [ip('192.168.10.20')], gw('192.168.10.1')),
-      N(7, 'pc', 'PC3', 580, 440, [ip('192.168.20.13')], gw('192.168.20.1')),
-      N(8, 'laptop', 'Laptop1', 720, 440, [ip('192.168.20.31')], gw('192.168.20.1')),
-      N(9, 'ios', 'IOS1', 780, 120),
-    ],
-    links: [
-      { a: 1, ap: 0, b: 2, bp: 0 }, { a: 1, ap: 1, b: 3, bp: 0 }, { a: 1, ap: 2, b: 9, bp: 0 },
-      { a: 2, ap: 1, b: 4, bp: 0 }, { a: 2, ap: 2, b: 5, bp: 0 }, { a: 2, ap: 3, b: 6, bp: 0 },
-      { a: 3, ap: 1, b: 7, bp: 0 }, { a: 3, ap: 2, b: 8, bp: 0 },
-    ],
-    notes: [{ id: 1, x: 40, y: 40, text: 'Branch office lab\nDouble-click PC1 → ping 192.168.20.13\nRight-click a link → Start capture' }],
-  };
+  return allTemplates().find(t => t.id === 'branch-office').build();
 }
 
 /* ════════════════════════════ start ════════════════════════════ */

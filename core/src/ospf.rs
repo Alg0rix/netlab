@@ -4,10 +4,10 @@
 
 use std::collections::HashMap;
 
-use crate::device::{Device, DeviceKind, Route};
+use crate::device::{Device, DeviceKind, Route, RouteProto};
 use crate::eth;
 use crate::events::SimEvent;
-use crate::frame::{Frame, Payload};
+use crate::frame::Frame;
 use crate::ip_str;
 use crate::net_of;
 
@@ -53,6 +53,15 @@ pub struct Ospf {
     pub seq: u32,
 }
 
+impl Ospf {
+    /// Clear runtime adjacency state; config (nets, areas, on) is kept.
+    pub fn reset(&mut self) {
+        self.nbrs.clear();
+        self.lsas.clear();
+        self.next_hello = 0;
+    }
+}
+
 impl Default for Ospf {
     fn default() -> Self {
         Self {
@@ -68,7 +77,7 @@ impl Default for Ospf {
     }
 }
 
-pub fn tick(dev: &mut Device, now: u64, events: &mut Vec<SimEvent>) {
+pub fn tick(dev: &mut Device, now: u64) {
     if !dev.ospf.on || !dev.powered || dev.kind != DeviceKind::Router {
         return;
     }
@@ -76,7 +85,7 @@ pub fn tick(dev: &mut Device, now: u64, events: &mut Vec<SimEvent>) {
     let before = dev.ospf.nbrs.len();
     dev.ospf.nbrs.retain(|n| now.saturating_sub(n.last) <= DEAD);
     if dev.ospf.nbrs.len() != before {
-        originate(dev, now, events);
+        originate(dev);
     }
     if now < dev.ospf.next_hello {
         return;
@@ -90,13 +99,25 @@ pub fn tick(dev: &mut Device, now: u64, events: &mut Vec<SimEvent>) {
         })
         .collect();
     for (port, area, ip, mask) in ports {
-        let nbrs: Vec<[u8; 4]> = dev.ospf.nbrs.iter().filter(|n| n.port == port).map(|n| n.rid).collect();
+        let nbrs: Vec<[u8; 4]> = dev
+            .ospf
+            .nbrs
+            .iter()
+            .filter(|n| n.port == port)
+            .map(|n| n.rid)
+            .collect();
         send(dev, port, ip, hello(dev.ospf.router_id, area, mask, &nbrs));
     }
 }
 
 /// True when the frame was OSPF and must not be routed.
-pub fn ingest(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) -> bool {
+pub fn ingest(
+    dev: &mut Device,
+    frame: &Frame,
+    in_port: usize,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+) -> bool {
     if frame.dst_ip != ALLSPF && !is_ospf(frame) {
         return false;
     }
@@ -106,18 +127,26 @@ pub fn ingest(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, events
     if !dev.ospf.on || dev.kind != DeviceKind::Router {
         return true;
     }
-    let Some(raw) = frame.raw.as_deref() else { return true };
-    let Some(v) = eth::view_ip(raw) else { return true };
+    let Some(raw) = frame.raw.as_deref() else {
+        return true;
+    };
+    let Some(v) = eth::view_ip(raw) else {
+        return true;
+    };
     let body = &raw[v.payload.min(raw.len())..];
     if body.len() < 24 || body[0] != 2 {
         return true;
     }
-    let Some(area) = area_of(dev, in_port) else { return true };
+    let Some(area) = area_of(dev, in_port) else {
+        return true;
+    };
     let pkt_area = u32::from_be_bytes(body[12..16].try_into().unwrap());
     if pkt_area != area {
         return true;
     }
-    let Some((my_ip, mask)) = dev.ports[in_port].ip else { return true };
+    let Some((my_ip, mask)) = dev.ports[in_port].ip else {
+        return true;
+    };
     if net_of(frame.src_ip, mask) != net_of(my_ip, mask) {
         return true;
     }
@@ -127,23 +156,43 @@ pub fn ingest(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, events
     }
     match body[1] {
         1 => {
-            let new = !dev.ospf.nbrs.iter().any(|n| n.rid == rid && n.port == in_port);
-            if let Some(n) = dev.ospf.nbrs.iter_mut().find(|n| n.rid == rid && n.port == in_port) {
+            let new = !dev
+                .ospf
+                .nbrs
+                .iter()
+                .any(|n| n.rid == rid && n.port == in_port);
+            if let Some(n) = dev
+                .ospf
+                .nbrs
+                .iter_mut()
+                .find(|n| n.rid == rid && n.port == in_port)
+            {
                 n.last = tick;
                 n.ip = frame.src_ip;
                 n.area = area;
             } else {
-                dev.ospf.nbrs.push(Nbr { rid, ip: frame.src_ip, port: in_port, area, last: tick });
-                crate::services::note(events, tick, dev, "ospf", &format!("OSPF neighbor {} up on {}", ip_str(frame.src_ip), in_port));
+                dev.ospf.nbrs.push(Nbr {
+                    rid,
+                    ip: frame.src_ip,
+                    port: in_port,
+                    area,
+                    last: tick,
+                });
+                crate::services::note(
+                    events,
+                    tick,
+                    dev,
+                    "ospf",
+                    &format!("OSPF neighbor {} up on {}", ip_str(frame.src_ip), in_port),
+                );
             }
             if new {
-                originate(dev, tick, events);
+                originate(dev);
             }
         }
         4 => {
             if parse_lsu(dev, &body[24..]) {
                 install(dev);
-                // reflood out other OSPF ports
                 let payload = body.to_vec();
                 let ports: Vec<(usize, [u8; 4])> = (0..dev.ports.len())
                     .filter(|p| *p != in_port && area_of(dev, *p).is_some())
@@ -160,7 +209,12 @@ pub fn ingest(dev: &mut Device, frame: &Frame, in_port: usize, tick: u64, events
 }
 
 fn is_ospf(frame: &Frame) -> bool {
-    frame.raw.as_deref().and_then(eth::view_ip).map(|v| v.proto == 89).unwrap_or(false)
+    frame
+        .raw
+        .as_deref()
+        .and_then(eth::view_ip)
+        .map(|v| v.proto == 89)
+        .unwrap_or(false)
 }
 
 pub fn area_of(dev: &Device, port: usize) -> Option<u32> {
@@ -168,17 +222,26 @@ pub fn area_of(dev: &Device, port: usize) -> Option<u32> {
         return Some(*a);
     }
     let (ip, _) = dev.ports.get(port)?.ip?;
-    dev.ospf.nets.iter().find(|n| crate::device::wild_match(ip, n.prefix, n.wild)).map(|n| n.area)
+    dev.ospf
+        .nets
+        .iter()
+        .find(|n| crate::device::wild_match(ip, n.prefix, n.wild))
+        .map(|n| n.area)
 }
 
 fn ensure_rid(dev: &mut Device) {
     if dev.ospf.router_id != [0; 4] {
         return;
     }
-    dev.ospf.router_id = dev.ports.iter().filter_map(|p| p.ip.map(|(a, _)| a)).max().unwrap_or([0; 4]);
+    dev.ospf.router_id = dev
+        .ports
+        .iter()
+        .filter_map(|p| p.ip.map(|(a, _)| a))
+        .max()
+        .unwrap_or([0; 4]);
 }
 
-fn originate(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
+fn originate(dev: &mut Device) {
     ensure_rid(dev);
     let rid = dev.ospf.router_id;
     if rid == [0; 4] {
@@ -192,7 +255,12 @@ fn originate(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
         .collect();
     let links: Vec<[u8; 4]> = dev.ospf.nbrs.iter().map(|n| n.rid).collect();
     dev.ospf.lsas.retain(|l| l.rid != rid);
-    dev.ospf.lsas.push(Lsa { rid, seq: dev.ospf.seq, stubs: stubs.clone(), links: links.clone() });
+    dev.ospf.lsas.push(Lsa {
+        rid,
+        seq: dev.ospf.seq,
+        stubs: stubs.clone(),
+        links: links.clone(),
+    });
     install(dev);
     let pkt = lsu(rid, dev.ospf.seq, &stubs, &links);
     let ports: Vec<(usize, [u8; 4], u32)> = (0..dev.ports.len())
@@ -207,11 +275,10 @@ fn originate(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
         body[12..16].copy_from_slice(&area.to_be_bytes());
         send(dev, port, ip, body);
     }
-    let _ = (tick, events);
 }
 
 fn install(dev: &mut Device) {
-    dev.routes.retain(|r| r.proto != 1);
+    dev.routes.retain(|r| r.proto != RouteProto::Ospf);
     let me = dev.ospf.router_id;
     let mut dist: HashMap<[u8; 4], u32> = HashMap::new();
     let mut hop: HashMap<[u8; 4], (usize, [u8; 4])> = HashMap::new();
@@ -229,12 +296,15 @@ fn install(dev: &mut Device) {
         }
         let mut grew = false;
         for lsa in &lsas {
-            let Some(d0) = dist.get(&lsa.rid).copied() else { continue };
+            let Some(d0) = dist.get(&lsa.rid).copied() else {
+                continue;
+            };
             for nbr in &lsa.links {
                 let nd = d0 + 1;
                 if dist.get(nbr).copied().unwrap_or(u32::MAX) > nd {
                     dist.insert(*nbr, nd);
-                    if let Some(via) = hop.get(&lsa.rid).copied().or_else(|| hop.get(nbr).copied()) {
+                    if let Some(via) = hop.get(&lsa.rid).copied().or_else(|| hop.get(nbr).copied())
+                    {
                         hop.insert(*nbr, via);
                     }
                     grew = true;
@@ -249,7 +319,9 @@ fn install(dev: &mut Device) {
         if lsa.rid == me {
             continue;
         }
-        let Some(&(port, nh)) = hop.get(&lsa.rid) else { continue };
+        let Some(&(port, nh)) = hop.get(&lsa.rid) else {
+            continue;
+        };
         if port >= dev.ports.len() {
             continue;
         }
@@ -260,7 +332,7 @@ fn install(dev: &mut Device) {
                 next_hop: nh,
                 out_port: port,
                 connected: false,
-                proto: 1,
+                proto: RouteProto::Ospf,
             });
         }
     }
@@ -269,10 +341,10 @@ fn install(dev: &mut Device) {
 fn hello(rid: [u8; 4], area: u32, mask: [u8; 4], nbrs: &[[u8; 4]]) -> Vec<u8> {
     let mut b = header(1, rid, area, 24 + 20 + nbrs.len() * 4);
     b.extend_from_slice(&mask);
-    b.extend_from_slice(&10u16.to_be_bytes());
+    b.extend_from_slice(&(HELLO_EVERY as u16).to_be_bytes());
     b.push(0x02);
     b.push(1);
-    b.extend_from_slice(&40u32.to_be_bytes());
+    b.extend_from_slice(&(DEAD as u32).to_be_bytes());
     b.extend_from_slice(&[0; 8]); // DR, BDR
     for n in nbrs {
         b.extend_from_slice(n);
@@ -281,7 +353,12 @@ fn hello(rid: [u8; 4], area: u32, mask: [u8; 4], nbrs: &[[u8; 4]]) -> Vec<u8> {
 }
 
 fn lsu(rid: [u8; 4], seq: u32, stubs: &[([u8; 4], [u8; 4])], links: &[[u8; 4]]) -> Vec<u8> {
-    let mut b = header(4, rid, 0, 24 + 4 + 4 + 4 + 2 + stubs.len() * 8 + links.len() * 4);
+    let mut b = header(
+        4,
+        rid,
+        0,
+        24 + 4 + 4 + 4 + 2 + stubs.len() * 8 + links.len() * 4,
+    );
     b.extend_from_slice(&1u32.to_be_bytes());
     b.extend_from_slice(&rid);
     b.extend_from_slice(&seq.to_be_bytes());
@@ -341,7 +418,12 @@ fn parse_lsu(dev: &mut Device, body: &[u8]) -> bool {
         i += 4;
     }
     dev.ospf.lsas.retain(|l| l.rid != rid);
-    dev.ospf.lsas.push(Lsa { rid, seq, stubs, links });
+    dev.ospf.lsas.push(Lsa {
+        rid,
+        seq,
+        stubs,
+        links,
+    });
     true
 }
 
@@ -349,18 +431,8 @@ fn send(dev: &mut Device, port: usize, src: [u8; 4], payload: Vec<u8>) {
     let mac = dev.ports[port].mac;
     let raw = eth::build_ip(mac, OSPF_MAC, src, ALLSPF, 1, 89, dev.ip_id, &payload);
     dev.ip_id = dev.ip_id.wrapping_add(1);
-    dev.outbox.push((
-        port,
-        Frame {
-            src_mac: mac,
-            dst_mac: OSPF_MAC,
-            src_ip: src,
-            dst_ip: ALLSPF,
-            ttl: 1,
-            vlan: 0,
-            payload: Payload::Raw { ethertype: 0x0800 },
-            raw: Some(raw),
-            icmp_echo: None,
-        },
-    ));
+    let mut f = Frame::raw_ip(src, ALLSPF, 1, raw);
+    f.src_mac = mac;
+    f.dst_mac = OSPF_MAC;
+    dev.outbox.push((port, f));
 }

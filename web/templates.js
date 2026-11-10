@@ -1,11 +1,10 @@
+import { lenMask } from './util.js';
+
 // Curated topology template marketplace (Beginner -> Expert) + user-saved templates.
 
 const USER_TEMPLATES_KEY = 'netlab.user_templates.v1';
 
-const lenMask = n => [0, 1, 2, 3].map(i => {
-  const b = Math.max(0, Math.min(8, n - i * 8));
-  return (0xff << (8 - b)) & 0xff;
-}).join('.');
+
 
 const N = (id, tpl, name, x, y, ports = [], routes = [], extra = {}) => ({
   id, tpl, name, x, y, ports, routes, ...extra,

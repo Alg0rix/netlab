@@ -19,6 +19,10 @@ export function emitLab(data) {
     out.push(`    x: ${n.x ?? 0}`);
     out.push(`    y: ${n.y ?? 0}`);
     if (n.powered === false) out.push('    powered: false');
+    if (n.uid) out.push(`    uid: ${scalar(n.uid)}`);
+    if (n.image) out.push(`    image: ${scalar(n.image)}`);
+    if (n.portCount) out.push(`    portCount: ${n.portCount}`);
+    if (n.vm) out.push(`    vm: { ram: ${n.vm.ram}, diskMB: ${n.vm.diskMB}, nic: ${scalar(n.vm.nic)}, nics: ${n.vm.nics} }`);
     if (n.startup) {
       out.push('    startup: |');
       for (const line of String(n.startup).split('\n')) out.push(`      ${line}`);
@@ -30,6 +34,10 @@ export function emitLab(data) {
     if (n.svc?.http) svc.push('http');
     if (svc.length) out.push(`    services: [${svc.join(', ')}]`);
     if (n.resolver) out.push(`    resolver: ${n.resolver}`);
+    if (n.dns?.length) {
+      out.push('    dns:');
+      for (const r of n.dns) out.push(`      - { name: ${scalar(r.name)}, ip: ${scalar(r.ip)} }`);
+    }
     if ((n.ports ?? []).some(Boolean)) {
       out.push('    ports:');
       for (const p of n.ports) {
@@ -79,6 +87,23 @@ export function emitLab(data) {
     const bits = [`a: ${l.a}`, `ap: ${l.ap}`, `b: ${l.b}`, `bp: ${l.bp}`, `delay: ${l.delay ?? 4}`, `jitter: ${l.jitter ?? 0}`, `loss: ${l.loss ?? 0}`, `mtu: ${l.mtu ?? 0}`, `speed: ${l.speed || '1G'}`];
     if (l.up === false) bits.push('up: false');
     out.push(`  - { ${bits.join(', ')} }`);
+  }
+    if (data.view) out.push(`view: { x: ${data.view.x ?? 0}, y: ${data.view.y ?? 0}, z: ${data.view.z ?? 1} }`);
+  if (data.notes?.length) {
+    out.push('notes:');
+    for (const n of data.notes) out.push(`  - { id: ${n.id}, x: ${n.x ?? 0}, y: ${n.y ?? 0}, text: ${scalar(n.text)} }`);
+  }
+  if (data.shapes?.length) {
+    out.push('shapes:');
+    for (const sh of data.shapes) {
+      const bits = [`id: ${sh.id}`, `kind: ${scalar(sh.kind)}`, `x: ${sh.x ?? 0}`, `y: ${sh.y ?? 0}`, `w: ${sh.w ?? 0}`, `h: ${sh.h ?? 0}`];
+      if (sh.stroke) bits.push(`stroke: ${scalar(sh.stroke)}`);
+      if (sh.fill) bits.push(`fill: ${scalar(sh.fill)}`);
+      if (sh.dash) bits.push(`dash: ${scalar(sh.dash)}`);
+      if (sh.width) bits.push(`width: ${sh.width}`);
+      if (sh.text) bits.push(`text: ${scalar(sh.text)}`);
+      out.push(`  - { ${bits.join(', ')} }`);
+    }
   }
   return out.join('\n') + '\n';
 }
@@ -131,10 +156,11 @@ function flowList(s) {
  */
 export function parseLab(text) {
   const lines = String(text).replace(/\r/g, '').split('\n');
-  const lab = { format: 'netlab', version: 1, name: 'lab', nodes: [], links: [] };
+  const lab = { format: 'netlab', version: 1, name: 'lab', nodes: [], links: [], notes: [], shapes: [] };
   let block = null;
   let node = null;
   let acl = null;
+  let topSec = null;
   const takeBlock = () => {
     if (!block) return;
     if (node && block.key === 'startup') node.startup = block.lines.join('\n').replace(/\s+$/, '');
@@ -152,16 +178,20 @@ export function parseLab(text) {
     if (!raw.trim() || raw.trim().startsWith('#')) continue;
     const s = raw.trim();
     if (!node && s.startsWith('name:')) { lab.name = unquote(s.slice(5)) || 'lab'; continue; }
-    if (s === 'nodes:' || s === 'links:') { node = null; acl = null; continue; }
+    if (s === 'nodes:' || s === 'links:') { node = null; acl = null; topSec = s.slice(0, -1); continue; }
+    if (s === 'notes:' || s === 'shapes:') { node = null; acl = null; topSec = s.slice(0, -1); continue; }
+    if (s.startsWith('view:')) { lab.view = brace(s.slice(5)); lab.view.x = +lab.view.x || 0; lab.view.y = +lab.view.y || 0; lab.view.z = +lab.view.z || 1; node = null; continue; }
     if (s.startsWith('- id:')) {
       node = { id: unquote(s.slice(5)), ports: [], routes: [], svc: {} };
       lab.nodes.push(node);
       acl = null;
       continue;
     }
-    if (!node && s.startsWith('- {') && s.includes('a:')) {
-      const l = brace(s.slice(1));
-      lab.links.push({ a: +l.a, ap: +l.ap, b: +l.b, bp: +l.bp, up: l.up !== false, delay: +l.delay || 4, jitter: +l.jitter || 0, loss: +l.loss || 0, mtu: +l.mtu || 0, speed: l.speed || '1G' });
+    if (!node && s.startsWith('- {')) {
+      const o = brace(s.slice(1));
+      if (topSec === 'notes') lab.notes.push({ id: +o.id || 0, x: +o.x || 0, y: +o.y || 0, text: o.text ?? '' });
+      else if (topSec === 'shapes') lab.shapes.push({ id: +o.id || 0, kind: o.kind, x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0, stroke: o.stroke, fill: o.fill, dash: o.dash, width: +o.width || 0, text: o.text });
+      else lab.links.push({ a: +o.a, ap: +o.ap, b: +o.b, bp: +o.bp, up: o.up !== false, delay: +(o.delay ?? 4), jitter: +(o.jitter ?? 0), loss: +(o.loss ?? 0), mtu: +(o.mtu ?? 0), speed: o.speed || '1G' });
       continue;
     }
     if (!node) continue;
@@ -173,7 +203,11 @@ export function parseLab(text) {
         block = { key: k, indent, content: indent + 2, lines: [] };
         continue;
       }
-      if (k === 'template') node.tpl = unquote(rest);
+      if (k === 'uid') node.uid = unquote(rest);
+      else if (k === 'image') node.image = unquote(rest);
+      else if (k === 'portCount') node.portCount = +rest || 0;
+      else if (k === 'vm') { const v = brace(rest); node.vm = { ram: +v.ram || 0, diskMB: +v.diskMB || 0, nic: v.nic, nics: +v.nics || 0 }; }
+      else if (k === 'template') node.tpl = unquote(rest);
       else if (k === 'name') node.name = unquote(rest);
       else if (k === 'x') node.x = +rest;
       else if (k === 'y') node.y = +rest;
@@ -182,7 +216,7 @@ export function parseLab(text) {
       else if (k === 'resolver') node.resolver = unquote(rest);
       else if (k === 'services') {
         for (const name of flowList(rest)) node.svc[name] = true;
-      } else if (k === 'ports' || k === 'routes' || k === 'ospf' || k === 'acls' || k === 'entries' || k === 'static_nat') {
+      } else if (k === 'ports' || k === 'routes' || k === 'ospf' || k === 'acls' || k === 'entries' || k === 'static_nat' || k === 'dns') {
         node._sec = k;
       }
       continue;
@@ -190,7 +224,9 @@ export function parseLab(text) {
     if (s === '- ~') { (node.ports ??= []).push(null); continue; }
     if (s.startsWith('- {')) {
       const o = brace(s.slice(1));
-      if (o.prefix && o.wild != null && node._sec === 'ospf') {
+      if (node._sec === 'dns' && o.name) {
+        (node.dns ??= []).push({ name: o.name, ip: o.ip });
+      } else if (o.prefix && o.wild != null && node._sec === 'ospf') {
         (node.ospf ??= { nets: [] }).nets.push({ prefix: o.prefix, wild: o.wild, area: +o.area || 0 });
       } else if (node._sec === 'static_nat' && o.inside) {
         (node.static_nat ??= []).push({ inside: o.inside, proto: +o.proto || 0, inside_port: +o.inside_port || 0, outside_port: +o.outside_port || 0 });

@@ -1,5 +1,5 @@
 mod device;
-pub mod eth;
+mod eth;
 mod events;
 mod frame;
 mod link;
@@ -7,17 +7,16 @@ mod ospf;
 mod services;
 mod topology;
 
-pub use device::{Ace, Acl, Device, DeviceId, DeviceKind, NatRole, Pending, Port, Route};
+pub use device::{DeviceId, DeviceKind};
 pub use events::SimEvent;
-pub use frame::{Frame, Payload, BROADCAST_MAC};
-pub use link::{Endpoint, InFlight, Link, LinkId, LinkSpeed};
+pub use link::LinkId;
 pub use topology::{Capture, Snapshot, Topology};
 
-pub fn ip_str(ip: [u8; 4]) -> String {
+pub(crate) fn ip_str(ip: [u8; 4]) -> String {
     format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
 }
 
-pub fn mac_str(mac: u64) -> String {
+pub(crate) fn mac_str(mac: u64) -> String {
     let b = mac.to_be_bytes();
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -25,7 +24,7 @@ pub fn mac_str(mac: u64) -> String {
     )
 }
 
-pub fn parse_ip(s: &str) -> Option<[u8; 4]> {
+pub(crate) fn parse_ip(s: &str) -> Option<[u8; 4]> {
     let mut out = [0u8; 4];
     let parts: Vec<&str> = s.trim().split('.').collect();
     if parts.len() != 4 {
@@ -37,10 +36,15 @@ pub fn parse_ip(s: &str) -> Option<[u8; 4]> {
     Some(out)
 }
 
-pub fn mask_bits(mask: [u8; 4]) -> u32 {
+pub(crate) fn mask_bits(mask: [u8; 4]) -> u32 {
     mask.iter().map(|o| o.count_ones()).sum()
 }
 
-pub fn net_of(ip: [u8; 4], mask: [u8; 4]) -> [u8; 4] {
-    [ip[0] & mask[0], ip[1] & mask[1], ip[2] & mask[2], ip[3] & mask[3]]
+pub(crate) fn net_of(ip: [u8; 4], mask: [u8; 4]) -> [u8; 4] {
+    [
+        ip[0] & mask[0],
+        ip[1] & mask[1],
+        ip[2] & mask[2],
+        ip[3] & mask[3],
+    ]
 }

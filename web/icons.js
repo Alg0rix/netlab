@@ -155,12 +155,14 @@ export function preloadIcons() {
 }
 
 /** interface naming per template, GNS3-style */
-export function ifName(template, i) {
+export function ifName(template, i, ports = 0) {
   switch (template) {
     case 'switch': return `e${i}`;
     case 'router': return `g0/${i}`;
-    case 'ios': return `f${i}/0`;
-    case 'ios-sw': return `fa1/${i}`;
+    // 8+ NICs: IO-2FE in slot 0 gives f0/0, f0/1, then PA-FE-TX in slots 1..
+    case 'ios': return ports > 7 ? (i < 2 ? `f0/${i}` : `f${i - 1}/0`) : `f${i}/0`;
+    // PA-8E (10M Ethernet) in slots 1..2 → e1/0..7, e2/0..7
+    case 'ios-sw': return i < 8 ? `e1/${i}` : `e2/${i - 8}`;
     case 'routeros':
     case 'mikrotik-sw': return `ether${i + 1}`;
     case 'ovs-sw':

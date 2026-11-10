@@ -2,7 +2,7 @@
 //! simplified frames and emulated routers (Dynamips NIOs, v86 NICs) that
 //! speak real wire format.
 
-use crate::frame::{Frame, Payload, BROADCAST_MAC};
+use crate::frame::{Frame, Payload};
 
 fn u16be(b: &[u8], o: usize) -> u16 {
     ((b[o] as u16) << 8) | b[o + 1] as u16
@@ -12,7 +12,7 @@ fn u32be(b: &[u8], o: usize) -> u32 {
     ((b[o] as u32) << 24) | ((b[o + 1] as u32) << 16) | ((b[o + 2] as u32) << 8) | b[o + 3] as u32
 }
 
-fn mac_of(b: &[u8]) -> u64 {
+pub(crate) fn mac_of(b: &[u8]) -> u64 {
     b.iter().take(6).fold(0u64, |m, &x| (m << 8) | x as u64)
 }
 
@@ -91,7 +91,6 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
             };
         }
         0x0800 => {
-            // IPv4 header
             if body.len() < 20 || body[0] >> 4 != 4 {
                 return Some(f);
             }
@@ -112,7 +111,9 @@ pub fn decode(raw: &[u8]) -> Option<Frame> {
                     11 => Payload::IcmpTimeExceeded,
                     _ => f.payload,
                 };
-                if matches!(f.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply) && icmp.len() >= 8 {
+                if matches!(f.payload, Payload::IcmpEchoRequest | Payload::IcmpEchoReply)
+                    && icmp.len() >= 8
+                {
                     f.icmp_echo = Some(icmp[4..].to_vec());
                 }
             }
@@ -193,7 +194,11 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
             out.extend_from_slice(&0x0800u16.to_be_bytes()); // ptype ipv4
             out.push(6);
             out.push(4);
-            let op: u16 = if matches!(f.payload, Payload::ArpRequest { .. }) { 1 } else { 2 };
+            let op: u16 = if matches!(f.payload, Payload::ArpRequest { .. }) {
+                1
+            } else {
+                2
+            };
             out.extend_from_slice(&op.to_be_bytes());
             out.extend_from_slice(&mac_bytes(f.src_mac));
             out.extend_from_slice(&f.src_ip); // spa = answering IP
@@ -209,34 +214,13 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
         }
         Payload::IcmpEchoRequest | Payload::IcmpEchoReply | Payload::IcmpTimeExceeded => {
             out.extend_from_slice(&0x0800u16.to_be_bytes());
-            // ICMP: type code cksum id seq
             let ty: u8 = match f.payload {
                 Payload::IcmpEchoRequest => 8,
                 Payload::IcmpTimeExceeded => 11,
                 _ => 0,
             };
-            let mut icmp = vec![ty, 0, 0, 0];
-            icmp.extend_from_slice(f.icmp_echo.as_deref().unwrap_or(&[0, 0, 0, 1]));
-            let c = cksum(&icmp);
-            icmp[2] = (c >> 8) as u8;
-            icmp[3] = c as u8;
-            // IPv4 header
-            let total = 20 + icmp.len();
-            out.push(0x45);
-            out.push(0);
-            out.extend_from_slice(&(total as u16).to_be_bytes());
-            out.extend_from_slice(&0u16.to_be_bytes()); // id
-            out.extend_from_slice(&0x4000u16.to_be_bytes()); // DF
-            out.push(f.ttl);
-            out.push(1);
-            out.extend_from_slice(&[0, 0]); // cksum placeholder
-            out.extend_from_slice(&f.src_ip);
-            out.extend_from_slice(&f.dst_ip);
-            let hlen = out.len() - 14;
-            let c = cksum(&out[14..14 + hlen]);
-            let cpos = out.len() - 10;
-            out[cpos] = (c >> 8) as u8;
-            out[cpos + 1] = c as u8;
+            let icmp = icmp_packet(ty, 0, f.icmp_echo.as_deref().unwrap_or(&[0, 0, 0, 1]));
+            push_ipv4(&mut out, f.ttl, 1, 0, f.src_ip, f.dst_ip, icmp.len());
             out.extend_from_slice(&icmp);
         }
         Payload::Raw { .. } => return None,
@@ -247,38 +231,28 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
     Some(out)
 }
 
+fn l4_name(proto: u8) -> &'static str {
+    match proto {
+        6 => "TCP",
+        17 => "UDP",
+        47 => "GRE",
+        88 => "EIGRP",
+        89 => "OSPF",
+        112 => "VRRP",
+        _ => "IP",
+    }
+}
+
 /// Human-readable label for a raw Ethernet frame (event log).
 pub fn raw_label(raw: &[u8]) -> String {
     if let Some(off) = ipv4_off(raw) {
         if raw.len() > off + 9 {
-            return match raw[off + 9] {
-                6 => "TCP".into(),
-                17 => "UDP".into(),
-                47 => "GRE".into(),
-                88 => "EIGRP".into(),
-                89 => "OSPF".into(),
-                112 => "VRRP".into(),
-                _ => "IP".into(),
-            };
+            return l4_name(raw[off + 9]).into();
         }
     }
     if raw.len() >= 14 {
         match u16be(raw, 12) {
-            0x0800 => {
-                if raw.len() >= 24 && (raw[14] >> 4) == 4 {
-                    match raw[23] {
-                        6 => "TCP".into(),
-                        17 => "UDP".into(),
-                        47 => "GRE".into(),
-                        88 => "EIGRP".into(),
-                        89 => "OSPF".into(),
-                        112 => "VRRP".into(),
-                        _ => "IP".into(),
-                    }
-                } else {
-                    "IP".into()
-                }
-            }
+            0x0800 => "IP".into(),
             0x0806 => "ARP".into(),
             0x8100 => {
                 if raw.len() >= 18 {
@@ -312,8 +286,6 @@ pub fn raw_label(raw: &[u8]) -> String {
     }
 }
 
-pub const _: () = assert!(BROADCAST_MAC == 0xFF_FF_FF_FF_FF_FF);
-
 /// Where the IPv4 header starts, skipping one 802.1Q / 802.1ad tag.
 pub(crate) fn ipv4_off(frame: &[u8]) -> Option<usize> {
     if frame.len() < 34 {
@@ -323,7 +295,11 @@ pub(crate) fn ipv4_off(frame: &[u8]) -> Option<usize> {
     if et == 0x0800 && frame[14] >> 4 == 4 {
         return Some(14);
     }
-    if (et == 0x8100 || et == 0x88a8) && frame.len() >= 38 && u16be(frame, 16) == 0x0800 && frame[18] >> 4 == 4 {
+    if (et == 0x8100 || et == 0x88a8)
+        && frame.len() >= 38
+        && u16be(frame, 16) == 0x0800
+        && frame[18] >> 4 == 4
+    {
         return Some(18);
     }
     None
@@ -357,7 +333,12 @@ pub(crate) fn view_ip(frame: &[u8]) -> Option<IpView> {
     if (proto == 6 || proto == 17) && frame.len() >= l4 + 4 {
         sport = u16be(frame, l4);
         dport = u16be(frame, l4 + 2);
-        payload = l4 + if proto == 17 { 8 } else { 20.min(frame.len() - l4) };
+        payload = l4
+            + if proto == 17 {
+                8
+            } else {
+                20.min(frame.len() - l4)
+            };
     } else if proto == 1 && frame.len() >= l4 + 8 {
         icmp_type = frame[l4];
         icmp_id = u16be(frame, l4 + 4);
@@ -386,7 +367,11 @@ fn pseudo_sum(src: [u8; 4], dst: [u8; 4], proto: u8, len: usize) -> u32 {
 }
 
 fn udp_sum(c: u16) -> u16 {
-    if c == 0 { 0xffff } else { c }
+    if c == 0 {
+        0xffff
+    } else {
+        c
+    }
 }
 
 fn finish(mut sum: u32) -> u16 {
@@ -476,7 +461,15 @@ pub(crate) fn sync_ipv4(
     }
 }
 
-fn push_ipv4(out: &mut Vec<u8>, ttl: u8, proto: u8, id: u16, src: [u8; 4], dst: [u8; 4], payload_len: usize) {
+fn push_ipv4(
+    out: &mut Vec<u8>,
+    ttl: u8,
+    proto: u8,
+    id: u16,
+    src: [u8; 4],
+    dst: [u8; 4],
+    payload_len: usize,
+) {
     let total = 20 + payload_len;
     out.push(0x45);
     out.push(0);
@@ -492,6 +485,40 @@ fn push_ipv4(out: &mut Vec<u8>, ttl: u8, proto: u8, id: u16, src: [u8; 4], dst: 
     let c = cksum(&out[start..]);
     out[start + 10] = (c >> 8) as u8;
     out[start + 11] = c as u8;
+}
+
+/// ICMP message: type, code, checksum over `body` (id/seq/data).
+pub(crate) fn icmp_packet(ty: u8, code: u8, body: &[u8]) -> Vec<u8> {
+    let mut icmp = vec![ty, code, 0, 0];
+    icmp.extend_from_slice(body);
+    let c = cksum(&icmp);
+    icmp[2] = (c >> 8) as u8;
+    icmp[3] = c as u8;
+    icmp
+}
+
+/// Ethernet/IPv4 frame carrying an ICMP message.
+pub(crate) fn build_icmp(
+    src_mac: u64,
+    dst_mac: u64,
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    id: u16,
+    ty: u8,
+    code: u8,
+    body: &[u8],
+) -> Vec<u8> {
+    build_ip(
+        src_mac,
+        dst_mac,
+        src,
+        dst,
+        ttl,
+        1,
+        id,
+        &icmp_packet(ty, code, body),
+    )
 }
 
 pub(crate) fn build_ip(
