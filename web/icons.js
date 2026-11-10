@@ -88,14 +88,14 @@ const SVG = {
 };
 
 export const TEMPLATES = [
-  { id: 'pc', kind: 'host', label: 'VPCS', sub: 'Virtual PC with a shell', group: 'End devices', prefix: 'PC', ports: 1 },
-  { id: 'laptop', kind: 'host', label: 'Laptop', sub: 'End host, one NIC', group: 'End devices', prefix: 'Laptop', ports: 1 },
-  { id: 'server', kind: 'host', label: 'Server', sub: 'End host, one NIC', group: 'End devices', prefix: 'Server', ports: 1 },
-  { id: 'switch', kind: 'switch', label: 'Ethernet switch', sub: '8-port L2, MAC learning', group: 'Switching', prefix: 'SW', ports: 8 },
-  { id: 'router', kind: 'router', label: 'Router', sub: '4-port L3, static routes', group: 'Routing', prefix: 'R', ports: 4 },
-  { id: 'ios', kind: 'ext', emu: 'dynamips', label: 'Cisco 7200', sub: 'Real IOS · your image', group: 'Emulated', prefix: 'IOS', ports: 4 },
-  { id: 'routeros', kind: 'ext', emu: 'v86', label: 'MikroTik RouterOS', sub: 'RouterOS v6 x86 · your image', group: 'Emulated', prefix: 'MT', ports: 1 },
-  { id: 'x86', kind: 'ext', emu: 'v86', label: 'x86 VM', sub: 'Any 32-bit x86 ISO or raw disk', group: 'Emulated', prefix: 'VM', ports: 1 },
+  { id: 'pc', kind: 'host', label: 'VPCS', sub: 'Virtual PC with a shell', group: 'End devices', prefix: 'PC', ports: 1, maxPorts: 8 },
+  { id: 'laptop', kind: 'host', label: 'Laptop', sub: 'End host, multi-NIC ready', group: 'End devices', prefix: 'Laptop', ports: 1, maxPorts: 8 },
+  { id: 'server', kind: 'host', label: 'Server', sub: 'End host, dual NIC default', group: 'End devices', prefix: 'Server', ports: 2, maxPorts: 8 },
+  { id: 'switch', kind: 'switch', label: 'Ethernet switch', sub: '8–16 port L2, MAC learning', group: 'Switching', prefix: 'SW', ports: 8, maxPorts: 16 },
+  { id: 'router', kind: 'router', label: 'Router', sub: '4–8 port L3, static routes', group: 'Routing', prefix: 'R', ports: 4, maxPorts: 8 },
+  { id: 'ios', kind: 'ext', emu: 'dynamips', label: 'Cisco 7200', sub: 'Real IOS · your image', group: 'Emulated', prefix: 'IOS', ports: 4, maxPorts: 7 },
+  { id: 'routeros', kind: 'ext', emu: 'v86', label: 'MikroTik RouterOS', sub: 'RouterOS v6 x86 · 4× Ethernet', group: 'Emulated', prefix: 'MT', ports: 4, maxPorts: 8 },
+  { id: 'x86', kind: 'ext', emu: 'v86', label: 'x86 VM', sub: '32-bit x86 ISO/disk · multi-NIC', group: 'Emulated', prefix: 'VM', ports: 4, maxPorts: 8 },
 ];
 export const tpl = id => TEMPLATES.find(t => t.id === id);
 
@@ -168,5 +168,6 @@ export const UI = {
   chip: g('<rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 2v2M10 2v2M6 12v2M10 12v2M2 6h2M2 10h2M12 6h2M12 10h2"/>'),
   minus: g('<path d="M3 8h10"/>'),
   dock: g('<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 10h12"/>'),
+  templates: g('<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>'),
   info: g('<circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 5h.01"/>'),
 };

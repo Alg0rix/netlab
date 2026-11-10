@@ -5,7 +5,7 @@
 // plus: serial console bytes (onSerial / sendSerial), a VGA screen element with
 // its own keyboard handling, and the guest disk (onDisk) for persistence.
 //
-// v86 emulates one NIC per VM, so a VM has exactly one interface (port 0).
+// v86 emulates up to 8 PCI NICs per VM (ports 0..count-1).
 
 let V86 = null;
 async function loadV86() {
@@ -14,8 +14,8 @@ async function loadV86() {
 }
 
 export const VM_DEFAULTS = {
-  routeros: { ram: 256, diskMB: 128, nic: 'ne2k' },
-  x86: { ram: 128, diskMB: 256, nic: 'ne2k' },
+  routeros: { ram: 256, diskMB: 128, nic: 'ne2k', nics: 4 },
+  x86: { ram: 128, diskMB: 256, nic: 'ne2k', nics: 4 },
 };
 
 const DISK_SAVE_IDLE_MS = 8000;   // save the disk this long after the guest stops writing
@@ -41,6 +41,7 @@ export class VMNode {
     this.devId = devId;
     this.name = name;
     this.vm = null;
+    this.nics = 1;
     this.state = 'stopped';
     this.onState = null;
     this.onLog = null;
@@ -63,12 +64,14 @@ export class VMNode {
    * media: ArrayBuffer of an ISO (attached as CD-ROM) or null
    * disk:  ArrayBuffer used as the first hard disk (modified in place by the guest)
    */
-  async boot({ media = null, disk, ram, nic }) {
+  async boot({ media = null, disk, ram, nic, nics = 4 }) {
     this.kill();
     this.setState('booting');
     let V;
     try { V = await loadV86(); } catch (e) { this.log(`could not load the x86 emulator: ${e.message}`); this.setState('stopped'); return; }
     this.disk = disk;
+    const count = Math.max(1, Math.min(8, nics | 0));
+    this.nics = count;
     const cfg = {
       wasm_path: new URL('./v86/v86.wasm', import.meta.url).href,
       bios: { url: new URL('./v86/seabios.bin', import.meta.url).href },
@@ -77,7 +80,7 @@ export class VMNode {
       vga_memory_size: 8 * 1024 * 1024,
       hda: { buffer: disk },
       boot_order: 0x132,          // hard disk first, then CD — an installed system boots itself
-      net_device: { type: nic },
+      net_device: { type: nic, count },
       screen_container: this.screen.el,
       disable_mouse: true,
       autostart: true,
@@ -88,9 +91,11 @@ export class VMNode {
     vm.add_listener('emulator-ready', () => {
       vm.keyboard_set_status(false);   // never listen to the whole page; keys come from our screen element
       this.setState('running');
-      this.log(`VM started · ${ram} MB RAM · ${nic} NIC${media ? ' · install CD attached' : ''}`);
+      this.log(`VM started · ${ram} MB RAM · ${count}× ${nic} NIC${count > 1 ? 's' : ''}${media ? ' · install CD attached' : ''}`);
     });
-    vm.add_listener('net0-send', bytes => this.onFrame && this.onFrame(this.devId, 0, bytes));
+    for (let i = 0; i < count; i++) {
+      vm.add_listener(`net${i}-send`, bytes => this.onFrame && this.onFrame(this.devId, i, bytes));
+    }
     let serBuf = [];
     vm.add_listener('serial0-output-byte', b => {
       serBuf.push(b);
@@ -117,7 +122,9 @@ export class VMNode {
 
   /** fabric → guest NIC */
   tx(port, bytes) {
-    if (port === 0 && this.vm && this.state === 'running') this.vm.bus.send('net0-receive', bytes);
+    if (port >= 0 && port < this.nics && this.vm && this.state === 'running') {
+      this.vm.bus.send(`net${port}-receive`, bytes);
+    }
   }
 
   /** console → guest serial, paced so the UART doesn't drop characters */

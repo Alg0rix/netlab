@@ -115,9 +115,9 @@ impl Topology {
         let id = self.next_device;
         self.next_device += 1;
         let n_ports = match kind {
-            DeviceKind::Host => 1,
-            DeviceKind::Switch => 8,
-            DeviceKind::Router => 4,
+            DeviceKind::Host => 8,
+            DeviceKind::Switch => 16,
+            DeviceKind::Router => 8,
             DeviceKind::Ext => 8,
         };
         let macs = (0..n_ports).map(|_| self.alloc_mac()).collect();
@@ -256,16 +256,26 @@ impl Topology {
         false
     }
 
-    /// Convenience: default route via `gw` on port 0 (typical host config).
+    /// Convenience: default route via `gw` on the matching connected port (or port 0).
     pub fn set_gateway(&mut self, dev: DeviceId, gw: &str) -> bool {
-        let Some(gw) = parse_ip(gw) else { return false };
+        let Some(gw_ip) = parse_ip(gw) else { return false };
         if let Some(d) = self.devices.get_mut(&dev) {
+            let out_port = d
+                .ports
+                .iter()
+                .enumerate()
+                .find_map(|(i, p)| {
+                    p.ip.and_then(|(addr, mask)| {
+                        (crate::net_of(addr, mask) == crate::net_of(gw_ip, mask)).then_some(i)
+                    })
+                })
+                .unwrap_or(0);
             d.routes.retain(|r| r.prefix != [0, 0, 0, 0]);
             d.routes.push(Route {
                 prefix: [0, 0, 0, 0],
                 mask: [0, 0, 0, 0],
-                next_hop: gw,
-                out_port: 0,
+                next_hop: gw_ip,
+                out_port,
                 connected: false,
             });
             return true;

@@ -5,6 +5,7 @@ import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, 
 import { dissect, hexRows, toPcap, TICK_MS } from './capture.js';
 import { SimShell } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile } from './store.js';
+import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
 
 /* ════════════════════════════ boot ════════════════════════════ */
 
@@ -99,8 +100,26 @@ const ifName = (id, i) => ifNameFor(tplOf(id), i);
 const portCount = id => {
   const d = byId.get(id);
   const t = tpl(tplOf(id));
-  return Math.min(d?.ports.length ?? 0, t?.ports ?? 99);
+  const want = meta.get(id)?.ports ?? t?.ports ?? 1;
+  return Math.min(d?.ports.length ?? 0, want);
 };
+
+function setNodePorts(id, count) {
+  const d = byId.get(id), m = meta.get(id), t = tpl(tplOf(id));
+  if (!d || !m) return;
+  const max = Math.min(d.ports.length, t?.maxPorts ?? d.ports.length);
+  const n = clamp(count | 0, 1, max);
+  for (let i = n; i < d.ports.length; i++) {
+    const lid = d.ports[i]?.link;
+    if (lid != null) { lab.remove_link(lid); caps.delete(lid); }
+    if (d.ports[i]?.ip) lab.clear_ip(id, i);
+  }
+  m.ports = n;
+  if (isVM(id)) m.nics = n;
+  refresh();
+  renderAll();
+  dirty();
+}
 
 function nodeState(id) {
   const d = byId.get(id);
@@ -141,8 +160,9 @@ function serialize() {
     nodes: snap.devices.map(d => ({
       id: d.id, tpl: tplOf(d.id), name: d.name, x: Math.round(d.x), y: Math.round(d.y),
       powered: d.powered, image: meta.get(d.id)?.image ?? null, uid: meta.get(d.id)?.uid,
-      ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic } } : {}),
-      ports: d.ports.map(p => (p.ip ? { ip: p.ip, mask: p.mask } : null)),
+      portCount: portCount(d.id),
+      ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic, nics: portCount(d.id) } } : {}),
+      ports: d.ports.slice(0, portCount(d.id)).map(p => (p.ip ? { ip: p.ip, mask: p.mask } : null)),
       routes: d.routes,
     })),
     links: snap.links.map(l => ({ a: l.a, ap: l.a_port, b: l.b, bp: l.b_port, up: l.up })),
@@ -172,7 +192,8 @@ function restore(data) {
     const t = tpl(n.tpl) ?? tpl('pc');
     const id = lab.add_device(t.kind, n.name, n.x, n.y);
     idmap.set(n.id, id);
-    registerNode(id, t.id, n.name, n.image, n.uid, n.vm);
+    const savedPorts = n.portCount ?? n.vm?.nics ?? (n.ports?.length ? Math.max(t.ports, n.ports.length) : t.ports);
+    registerNode(id, t.id, n.name, n.image, n.uid, n.vm, savedPorts);
     (n.ports ?? []).forEach((p, i) => p && lab.set_ip(id, i, p.ip, p.mask));
     for (const r of n.routes ?? []) lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
@@ -209,11 +230,13 @@ function dirty() {
 const isVM = id => tpl(tplOf(id))?.emu === 'v86';
 const isIOS = id => tplOf(id) === 'ios';
 
-function registerNode(id, tplId, name, image = null, uid = null, vm = null) {
-  const m = { tpl: tplId, image, uid: uid || newUid(), nvSaved: null };
+function registerNode(id, tplId, name, image = null, uid = null, vm = null, ports = null) {
+  const t = tpl(tplId);
+  const initialPorts = ports ?? vm?.nics ?? t?.ports ?? 1;
+  const m = { tpl: tplId, image, uid: uid || newUid(), nvSaved: null, ports: initialPorts };
   meta.set(id, m);
-  if (tpl(tplId)?.emu === 'v86') {
-    Object.assign(m, VM_DEFAULTS[tplId] ?? VM_DEFAULTS.x86, vm ?? {}, { diskSaved: null, diskSize: 0 });
+  if (t?.emu === 'v86') {
+    Object.assign(m, VM_DEFAULTS[tplId] ?? VM_DEFAULTS.x86, vm ?? {}, { ports: initialPorts, nics: initialPorts, diskSaved: null, diskSize: 0 });
     const node = new VMNode(id, name);
     node.onLog = msg => vmConsoleOf(id).log(msg);
     node.onSerial = bytes => vmConsoleOf(id).serial(bytes);
@@ -302,7 +325,10 @@ function duplicateSelection() {
   for (const id of ids) {
     const d = byId.get(id);
     const nid = addNode(tplOf(id), d.x + 40, d.y + 40);
-    if (nid != null) fresh.push(nid);
+    if (nid != null) {
+      setNodePorts(nid, portCount(id));
+      fresh.push(nid);
+    }
   }
   clearSel();
   fresh.forEach(id => sel.nodes.add(id));
@@ -326,7 +352,7 @@ async function startNode(id) {
   if (!rec) return toast(`Image ${name} is missing — upload it again`, 'err');
   node.name = d.name;
   const nv = await nvram.get(meta.get(id).uid);
-  node.boot(rec.data, iosArgs(tpl('ios').ports), nv?.data ?? null);
+  node.boot(rec.data, iosArgs(portCount(id)), nv?.data ?? null);
   openConsole(id);
   pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${name} (${(rec.size / 1e6).toFixed(1)} MB)` });
 }
@@ -360,7 +386,7 @@ async function startVM(id) {
   c.setView(mbr[0] === 0x55 && mbr[1] === 0xaa ? 'serial' : 'screen');
   openConsole(id);
   pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${saved ? 'its saved disk' : name}` });
-  await node.boot({ media, disk, ram: m.ram, nic: m.nic });
+  await node.boot({ media, disk, ram: m.ram, nic: m.nic, nics: portCount(id) });
   if (!saved) node.saveDisk();                          // the uid now has a disk; installs persist from here
 }
 
@@ -1386,6 +1412,9 @@ function focusRename() {
 const MENUS = {
   File: () => [
     { label: 'New lab', icon: 'plus', run: async () => { if (await confirmBox('New lab', 'Start a new empty lab? The current topology is replaced (save it first with Ctrl+S if you need it).', 'New lab', true)) { restore({ name: 'Untitled lab' }); dirty(); } } },
+    { label: 'Topology templates…', icon: 'templates', kbd: 'T', run: () => templateMarketplace() },
+    { label: 'Save current as template…', icon: 'plus', run: () => templateMarketplace('all', true), disabled: !snap.devices.length },
+    '-',
     { label: 'Open lab file…', icon: 'upload', kbd: 'Ctrl+O', run: openFile },
     { label: 'Save lab file', icon: 'download', kbd: 'Ctrl+S', run: saveFile },
     '-',
@@ -1418,6 +1447,7 @@ const MENUS = {
     { label: 'Realtime mode', run: () => setMode('realtime'), sub: mode === 'realtime' ? '●' : '' },
     { label: 'Simulation mode', run: () => setMode('sim'), sub: mode === 'sim' ? '●' : '' },
     '-',
+    { label: 'Topology templates…', icon: 'templates', kbd: 'T', run: () => templateMarketplace() },
     { label: 'Images…', icon: 'image', run: () => imageManager() },
     { label: 'Clear event log', icon: 'trash', run: () => { events.length = 0; renderEvents(); renderDockTabs(); } },
   ],
@@ -1477,8 +1507,8 @@ function exportPng() {
 
 /* ════════════════════════════ modals ════════════════════════════ */
 
-function modal(title, body, foot = '') {
-  const m = h(`<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+function modal(title, body, foot = '', cls = '') {
+  const m = h(`<div class="modal-bg"><div class="modal ${cls}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
     <header>${esc(title)}<span class="spacer"></span><button class="icon-btn sm" data-x>${UI.x}</button></header>
     <div class="mbody"></div>${foot ? `<footer>${foot}</footer>` : ''}</div></div>`);
   $('.mbody', m).append(typeof body === 'string' ? h(`<div>${body}</div>`) : body);
@@ -1491,6 +1521,206 @@ function modal(title, body, foot = '') {
   m.close = close;
   setTimeout(() => $('button, input', $('.mbody', m))?.focus(), 0);
   return m;
+}
+
+function templateMarketplace(initialTab = 'all', openSave = false) {
+  let activeLevel = initialTab;
+  let activeCat = 'all';
+  let query = '';
+  let showSave = openSave && snap.devices.length > 0;
+
+  const body = h(`<div style="display:flex;flex-direction:column;gap:14px">
+    <div class="market-bar">
+      <div class="market-tabs" role="tablist" aria-label="Difficulty filter"></div>
+      <select class="field" data-cat style="width:auto;min-width:155px;padding:5px 10px;font-size:12px" aria-label="Category filter">
+        <option value="all">All categories</option>
+      </select>
+      <span class="spacer" style="flex:1"></span>
+      <label class="search">
+        ${ico('search')}
+        <input data-q placeholder="Search topologies, protocols, tags…" spellcheck="false" />
+      </label>
+      <button class="btn sm" data-toggle-save ${snap.devices.length ? '' : 'disabled title="Add devices to the canvas first"'}>${ico('plus')}Save current lab</button>
+    </div>
+    <div class="market-save-box" data-save-box hidden>
+      <h4><span>Publish current canvas to My Templates</span><button class="icon-btn sm" data-close-save title="Cancel">${UI.x}</button></h4>
+      <div class="market-save-grid">
+        <input class="field" data-s-title placeholder="Template title" value="${esc(labName)}" spellcheck="false" />
+        <select class="field" data-s-level>
+          <option value="beginner">Beginner</option>
+          <option value="intermediate" selected>Intermediate</option>
+          <option value="advanced">Advanced</option>
+          <option value="expert">Expert</option>
+        </select>
+        <input class="field" data-s-cat placeholder="Category (e.g. Routing, WAN, Security)" value="Custom Lab" spellcheck="false" />
+      </div>
+      <div class="market-save-grid" style="grid-template-columns: 2fr 1fr">
+        <input class="field" data-s-desc placeholder="Short summary of what this topology demonstrates…" spellcheck="false" />
+        <input class="field" data-s-tags placeholder="Tags (comma-separated, e.g. OSPF, Multi-NIC)" value="Custom, ${snap.devices.length} nodes" spellcheck="false" />
+      </div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn sm" data-close-save2>Cancel</button>
+        <button class="btn sm primary" data-do-save>${ico('download')}Save to Marketplace</button>
+      </div>
+    </div>
+    <div class="market-grid" data-grid></div>
+  </div>`);
+
+  const m = modal('Topology Template Marketplace', body, '', 'market');
+  const tabsEl = $('.market-tabs', body);
+  const catSel = $('[data-cat]', body);
+  const gridEl = $('[data-grid]', body);
+  const saveBox = $('[data-save-box]', body);
+  const qInput = $('[data-q]', body);
+
+  catSel.onchange = () => { activeCat = catSel.value; draw(); };
+
+  const syncSaveBox = () => { saveBox.hidden = !showSave; };
+  syncSaveBox();
+
+  $('[data-toggle-save]', body).onclick = () => { showSave = !showSave; syncSaveBox(); if (showSave) $('[data-s-title]', body).focus(); };
+  $('[data-close-save]', body).onclick = () => { showSave = false; syncSaveBox(); };
+  $('[data-close-save2]', body).onclick = () => { showSave = false; syncSaveBox(); };
+
+  $('[data-do-save]', body).onclick = () => {
+    const title = $('[data-s-title]', body).value.trim() || labName || 'Custom Topology';
+    const level = $('[data-s-level]', body).value;
+    const category = $('[data-s-cat]', body).value.trim() || 'Custom';
+    const summary = $('[data-s-desc]', body).value.trim() || `User-created topology with ${snap.devices.length} devices and ${snap.links.length} links.`;
+    const tags = $('[data-s-tags]', body).value.split(',').map(s => s.trim()).filter(Boolean);
+    const data = serialize();
+    data.name = title;
+    userTemplates.add({
+      id: 'user-' + Date.now().toString(36),
+      title, level, category, summary,
+      tags: tags.length ? tags : ['Custom'],
+      objectives: ['Saved from canvas — load to restore all nodes, links, IPs, routes, and notes.'],
+      data,
+    });
+    showSave = false;
+    syncSaveBox();
+    toast(`Saved "${title}" to Marketplace`, 'ok');
+    draw();
+  };
+
+  const loadTpl = t => {
+    const data = t.build();
+    restore(data);
+    fit();
+    dirty();
+    m.close();
+    toast(`Loaded "${t.title}" (${LEVEL_META[t.level]?.label ?? t.level})`, 'ok');
+  };
+
+  const exportTpl = t => {
+    const data = t.build();
+    const fname = (t.id || t.title || 'template').toLowerCase().replace(/[^\w.-]+/g, '_') + '.netlab.json';
+    download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), fname);
+  };
+
+  const draw = () => {
+    const list = allTemplates();
+    const cats = [...new Set(list.map(x => x.category).filter(Boolean))];
+    catSel.innerHTML = `<option value="all">All categories (${cats.length})</option>` +
+      cats.map(c => `<option value="${esc(c)}" ${activeCat === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
+
+    const counts = {
+      all: list.length,
+      beginner: list.filter(x => x.level === 'beginner').length,
+      intermediate: list.filter(x => x.level === 'intermediate').length,
+      advanced: list.filter(x => x.level === 'advanced').length,
+      expert: list.filter(x => x.level === 'expert').length,
+      custom: list.filter(x => x.custom).length,
+    };
+
+    const tabDefs = [
+      ['all', 'All'],
+      ['beginner', 'Beginner'],
+      ['intermediate', 'Intermediate'],
+      ['advanced', 'Advanced'],
+      ['expert', 'Expert'],
+      ...(counts.custom ? [['custom', 'My Templates']] : []),
+    ];
+
+    tabsEl.innerHTML = '';
+    for (const [id, label] of tabDefs) {
+      const b = h(`<button class="market-tab ${activeLevel === id ? 'on' : ''}" role="tab">
+        <span>${esc(label)}</span><span class="cnt">${counts[id] ?? 0}</span>
+      </button>`);
+      b.onclick = () => { activeLevel = id; draw(); };
+      tabsEl.append(b);
+    }
+
+    const q = query.trim().toLowerCase();
+    const filtered = list.filter(t => {
+      if (activeLevel === 'custom' && !t.custom) return false;
+      if (activeLevel !== 'all' && activeLevel !== 'custom' && t.level !== activeLevel) return false;
+      if (activeCat !== 'all' && t.category !== activeCat) return false;
+      if (!q) return true;
+      const hay = `${t.title} ${t.category} ${t.level} ${t.summary} ${(t.tags ?? []).join(' ')} ${(t.objectives ?? []).join(' ')}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    gridEl.innerHTML = '';
+    if (!filtered.length) {
+      gridEl.append(h(`<div class="pane-empty" style="grid-column:1/-1;padding:36px"><div><b>No matching topology templates</b><span>Try clearing the search filter or switching difficulty tabs.</span></div></div>`));
+      return;
+    }
+
+    for (const t of filtered) {
+      const data = t.build();
+      const lv = LEVEL_META[t.custom ? 'custom' : t.level] ?? LEVEL_META.beginner;
+      const lvBadge = LEVEL_META[t.level] ?? lv;
+      const nNodes = data.nodes?.length ?? 0;
+      const nLinks = data.links?.length ?? 0;
+      const svg = renderTemplatePreviewSVG(data);
+
+      const card = h(`<article class="tpl-card">
+        <div class="tpl-thumb">
+          ${svg}
+          <span class="tpl-cat">${esc(t.category || 'Topology')}</span>
+          <span class="pill ${lvBadge.color} tpl-lvl">${esc(lvBadge.label)}${t.custom ? ' · Custom' : ''}</span>
+          <span class="tpl-stats">${nNodes} device${nNodes === 1 ? '' : 's'} · ${nLinks} link${nLinks === 1 ? '' : 's'}</span>
+        </div>
+        <div class="tpl-body">
+          <h3 class="tpl-title">${esc(t.title)}</h3>
+          <p class="tpl-desc">${esc(t.summary)}</p>
+          <div class="tpl-tags">${(t.tags ?? []).map(tag => `<button class="tpl-tag" data-tag="${esc(tag)}" title="Filter by ${esc(tag)}">${esc(tag)}</button>`).join('')}</div>
+          ${t.objectives?.length ? `<details class="tpl-obj">
+            <summary>Lab objectives (${t.objectives.length} steps)</summary>
+            <ol>${t.objectives.map(o => `<li>${esc(o)}</li>`).join('')}</ol>
+          </details>` : ''}
+        </div>
+        <div class="tpl-foot">
+          <button class="btn sm primary" data-load>${ico('play')}Load topology</button>
+          <button class="btn sm" data-export title="Download .netlab.json">${ico('download')}JSON</button>
+          <span class="spacer"></span>
+          ${t.custom ? `<button class="icon-btn sm" data-del title="Delete custom template">${UI.trash}</button>` : ''}
+        </div>
+      </article>`);
+
+      $('[data-load]', card).onclick = () => loadTpl(t);
+      $('[data-export]', card).onclick = () => exportTpl(t);
+      $$('[data-tag]', card).forEach(tb => tb.onclick = () => {
+        query = tb.dataset.tag;
+        qInput.value = query;
+        draw();
+      });
+      const delBtn = $('[data-del]', card);
+      if (delBtn) delBtn.onclick = () => {
+        userTemplates.remove(t.id);
+        if (activeLevel === 'custom' && !userTemplates.list().length) activeLevel = 'all';
+        toast(`Removed "${t.title}"`, 'ok');
+        draw();
+      };
+      gridEl.append(card);
+    }
+    hydrateIcons(gridEl);
+  };
+
+  qInput.oninput = () => { query = qInput.value; draw(); };
+  draw();
+  setTimeout(() => qInput.focus(), 0);
 }
 
 const KIND_LABEL = { ios: 'IOS', iso: 'ISO', disk: 'Disk' };
@@ -1578,7 +1808,7 @@ const chooseImage = id => imageManager(id);
 
 function shortcuts() {
   const rows = [
-    ['V / C / N', 'Select, Link, Note tools'], ['Esc', 'Cancel / clear selection'],
+    ['V / C / N', 'Select, Link, Note tools'], ['T', 'Topology template marketplace'], ['Esc', 'Cancel / clear selection'],
     ['Del / Backspace', 'Delete selection'], ['Ctrl+A', 'Select all'], ['Ctrl+D', 'Duplicate'], ['F2', 'Rename'],
     ['Space + drag', 'Pan (or middle mouse)'], ['Ctrl + scroll', 'Zoom at cursor'], ['+ / − / 0 / F', 'Zoom in, out, 100%, fit'],
     ['L / G / M', 'Labels, grid, minimap'], ['`', 'Toggle bottom panel'],
@@ -1706,11 +1936,12 @@ function nodeInspector(id) {
   if (isVM(id)) root.append(vmSettings(id, d, st));
   if (isExt && !isVM(id)) {
     const img = meta.get(id).image;
+    const nPorts = portCount(id);
     const s = h(`<div class="sect"><h4>Image</h4>
       <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img ? esc(img) : '<span class="muted">none selected</span>'}</span>
       <button class="btn sm" data-img>${ico('image')}${img ? 'Change' : 'Choose'}</button></div>
       <dl class="kv" style="margin-top:10px"><dt>Platform</dt><dd>c7200 · NPE-400</dd><dt>RAM</dt><dd>256 MB</dd>
-      <dt>Adapters</dt><dd>C7200-IO-FE + 3× PA-FE-TX</dd></dl>
+      <dt>Adapters</dt><dd>C7200-IO-FE${nPorts > 1 ? ` + ${nPorts - 1}× PA-FE-TX` : ''}</dd></dl>
       ${crossOriginIsolated ? '' : '<p class="muted" style="margin-top:8px">This page is not cross-origin isolated, so IOS cannot boot here. Serve with COOP/COEP (<span class="mono">make serve</span>).</p>'}</div>`);
     $('[data-img]', s).onclick = () => chooseImage(id);
     root.append(s);
@@ -1735,8 +1966,16 @@ function nodeInspector(id) {
 
   // interfaces
   const n = portCount(id);
-  const ifs = h(`<div class="sect"><h4>Interfaces</h4><table class="iftable"><thead><tr><th>Name</th><th>${isSw ? 'Connected to' : 'IPv4 / prefix'}</th>${isSw ? '' : '<th>Peer</th>'}</tr></thead><tbody></tbody></table>
-    ${isExt ? `<p class="muted" style="margin:8px 0 0">Addresses are configured inside the ${isVM(id) ? 'guest (console)' : 'IOS console'}.${isVM(id) ? ' The emulator provides one network interface per VM.' : ''}</p>` : ''}</div>`);
+  const maxP = Math.min(d.ports.length, t.maxPorts ?? d.ports.length);
+  const portOpts = isSw ? [4, 8, 12, 16] : isIOS(id) ? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 6, 8];
+  const validOpts = [...new Set([...portOpts.filter(v => v <= maxP), n])].sort((a, b) => a - b);
+  const lockPorts = isExt && st !== 'stopped';
+  const ifs = h(`<div class="sect"><h4>Interfaces<span class="spacer"></span>
+    <select class="field" data-ports style="width:auto;padding:2px 6px;height:22px;font-size:11px;text-transform:none;letter-spacing:0" ${lockPorts ? 'disabled title="Stop the node to change NIC count"' : ''}>
+      ${validOpts.map(v => `<option value="${v}" ${v === n ? 'selected' : ''}>${v} port${v === 1 ? '' : 's'}</option>`).join('')}
+    </select></h4><table class="iftable"><thead><tr><th>Name</th><th>${isSw ? 'Connected to' : 'IPv4 / prefix'}</th>${isSw ? '' : '<th>Peer</th>'}</tr></thead><tbody></tbody></table>
+    ${isExt ? `<p class="muted" style="margin:8px 0 0">Addresses are configured inside the ${isVM(id) ? 'guest (console)' : 'IOS console'}.</p>` : ''}</div>`);
+  $('[data-ports]', ifs).onchange = e => setNodePorts(id, +e.target.value);
   const tb = $('tbody', ifs);
   for (let i = 0; i < n; i++) {
     const p = d.ports[i];
@@ -1836,6 +2075,7 @@ function nodeInspector(id) {
 function vmSettings(id, d, st) {
   const m = meta.get(id), running = st !== 'stopped';
   const ros = tplOf(id) === 'routeros';
+  const nics = portCount(id);
   const when = m.diskSaved ? new Date(m.diskSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
   const root = h(`<div>
     <div class="sect"><h4>Image</h4>
@@ -1850,6 +2090,7 @@ function vmSettings(id, d, st) {
         <dt>NIC model</dt><dd><select class="field" data-nic ${running ? 'disabled' : ''}>
           <option value="ne2k" ${m.nic === 'ne2k' ? 'selected' : ''}>NE2000 (works with RouterOS v6)</option>
           <option value="virtio" ${m.nic === 'virtio' ? 'selected' : ''}>virtio-net (modern Linux)</option></select></dd>
+        <dt>NICs</dt><dd><select class="field" data-nics ${running ? 'disabled' : ''}>${[1, 2, 3, 4, 6, 8].map(v => `<option value="${v}" ${v === nics ? 'selected' : ''}>${v} × Ethernet</option>`).join('')}</select></dd>
       </div>
       ${running ? '<p class="muted" style="margin:8px 0 0;font-size:12px">Stop the VM to change hardware.</p>' : ''}
     </div>
@@ -1865,6 +2106,7 @@ function vmSettings(id, d, st) {
   $('[data-ram]', root).onchange = e => set('ram', +e.target.value);
   $('[data-disk]', root).onchange = e => set('diskMB', +e.target.value);
   $('[data-nic]', root).onchange = e => set('nic', e.target.value);
+  $('[data-nics]', root).onchange = e => setNodePorts(id, +e.target.value);
   const rs = $('[data-reset]', root);
   if (rs) rs.onclick = async () => {
     if (!(await confirmBox('Reset disk', `Delete the disk of ${d.name}? Everything installed or configured inside the VM is lost; it starts from the image again.`, 'Reset', true))) return;
@@ -1977,9 +2219,13 @@ function overviewInspector() {
     <div class="sect"><h4>Lab</h4><div class="stat">
       <div><b>${snap.devices.length}</b><span>devices</span></div>
       <div><b>${snap.links.length}</b><span>links</span></div>
-      <div><b>${run}</b><span>running</span></div></div></div>
+      <div><b>${run}</b><span>running</span></div></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn sm" data-act="templates" style="flex:1">${ico('templates')}Browse topology templates</button>
+      </div>
+    </div>
     <div class="sect"><h4>Getting started</h4><ol class="steps">
-      <li>Drag devices from the left onto the canvas.</li>
+      <li>Browse <b>Templates</b> (<kbd>T</kbd>) for ready-to-run topologies from <b>Beginner</b> to <b>Expert</b>, or drag devices from the left onto the canvas.</li>
       <li>Press <kbd>C</kbd>, click a device and pick an interface, then click the other device.</li>
       <li>Select a device to set addresses here, or double-click it for a shell (<span class="mono">ip 10.0.0.2/24 10.0.0.1</span>).</li>
       <li>Right-click a link → <b>Start capture</b> to see every frame decoded, and save it as .pcap for Wireshark.</li>
@@ -2269,7 +2515,7 @@ function simConsole(id) {
   const t = termShell();
   const app = {
     get lab() { return lab; },
-    dev: i => byId.get(i), snap: () => snap, ifName, refresh: () => { refresh(); renderInspector(true); dirty(); },
+    dev: i => byId.get(i), snap: () => snap, ifName, portCount, refresh: () => { refresh(); renderInspector(true); dirty(); },
     realtime: () => mode === 'realtime',
     rename: (i, n) => rename(i, n),
   };
@@ -2529,6 +2775,7 @@ document.addEventListener('click', e => {
   const a = e.target.closest('[data-act]')?.dataset.act;
   if (a === 'start-all') startAll();
   if (a === 'stop-all') stopAll();
+  if (a === 'templates') templateMarketplace();
   if (a === 'images') imageManager();
   if (a === 'demo') { restore(DEMO()); fit(); dirty(); }
 });
@@ -2559,6 +2806,7 @@ addEventListener('keydown', e => {
     case 'r': case 'R': setTool('rect'); break;
     case 'o': case 'O': setTool('ellipse'); break;
     case '/': setTool('line'); e.preventDefault(); break;
+    case 't': case 'T': templateMarketplace(); break;
     case 'Escape': if (armed || cable || tool !== 'select') setTool('select'); else selectOnly(null); break;
     case 'Delete': case 'Backspace': deleteSelection(); e.preventDefault(); break;
     case 'F2': focusRename(); e.preventDefault(); break;

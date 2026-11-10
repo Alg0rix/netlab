@@ -76,3 +76,29 @@ fn deleting_a_node_frees_the_peer_port() {
     let pc3 = t.add_device(DeviceKind::Host, "PC3".into(), 0.0, 0.0);
     assert!(t.add_link_ports(sw, 5, pc3, 0).is_some(), "SW1 port 5 should be free again");
 }
+
+#[test]
+fn multi_nic_host_can_communicate_on_all_interfaces() {
+    let mut t = Topology::new();
+    let srv = t.add_device(DeviceKind::Host, "SRV1".into(), 0.0, 0.0);
+    let pc1 = t.add_device(DeviceKind::Host, "PC1".into(), 0.0, 0.0);
+    let pc2 = t.add_device(DeviceKind::Host, "PC2".into(), 0.0, 0.0);
+
+    // Connect SRV1 eth0 -> PC1 eth0 (subnet A) and SRV1 eth1 -> PC2 eth0 (subnet B)
+    assert!(t.add_link_ports(srv, 0, pc1, 0).is_some());
+    assert!(t.add_link_ports(srv, 1, pc2, 0).is_some());
+
+    t.set_ip(srv, 0, "10.1.0.1", "255.255.255.0");
+    t.set_ip(srv, 1, "10.2.0.1", "255.255.255.0");
+    t.set_ip(pc1, 0, "10.1.0.2", "255.255.255.0");
+    t.set_ip(pc2, 0, "10.2.0.2", "255.255.255.0");
+
+    assert!(t.ping(srv, "10.1.0.2"));
+    let msgs1 = run(&mut t);
+    assert!(msgs1.iter().any(|m| m.contains("reply from 10.1.0.2")));
+
+    assert!(t.ping(srv, "10.2.0.2"));
+    let msgs2 = run(&mut t);
+    assert!(msgs2.iter().any(|m| m.contains("reply from 10.2.0.2")));
+}
+

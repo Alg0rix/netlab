@@ -44,19 +44,22 @@ const COMMON = {
   help: ARG('List commands'),
 };
 const HOST_TREE = {
-  ip: ARG('Show or set the IPv4 address', {
-    '<addr/len>': ARG('Address, e.g. 10.0.0.5/24', { '<gateway>': ARG('Default gateway') }),
+  ip: ARG('Show or set an IPv4 address', {
+    '<addr/len>': ARG('Address on eth0, e.g. 10.0.0.5/24', { '<gateway>': ARG('Default gateway') }),
+    '<if>': ARG('Interface, e.g. eth1', { '<addr/len>': ARG('Address, e.g. 10.0.1.5/24', { '<gateway>': ARG('Default gateway') }, false) }, false),
+    address: ARG('Set an interface address', { '<if>': ARG('Interface', { '<addr/len>': ARG('Address, e.g. 10.0.1.5/24') }, false) }, false),
     dhcp: ARG('Get an address via DHCP (not modelled)'),
   }),
   show: ARG('Show information', {
-    ip: ARG('Address, gateway, MAC'),
+    ip: ARG('Addresses, gateway, MACs', { interface: ARG('Interface table', { brief: ARG('Brief summary') }) }),
+    interface: ARG('Interface summary'),
     arp: ARG('ARP cache'),
     route: ARG('Routing table'),
   }),
   arp: ARG('ARP cache'),
   set: ARG('Set a property', { pcname: ARG('Node name', { '<name>': ARG('New name') }, false) }, false),
   ...COMMON,
-  clear: ARG('Clear the screen', { ip: ARG('Remove the IPv4 address') }),
+  clear: ARG('Clear the screen', { ip: ARG('Remove an IPv4 address', { '<if>': ARG('Interface (default eth0)') }) }),
 };
 const ROUTER_TREE = (isSwitch) => ({
   show: ARG('Show running system information', {
@@ -84,7 +87,7 @@ const ROUTER_TREE = (isSwitch) => ({
 });
 
 export class SimShell {
-  /** app: { lab, dev(id), meta(id), ifName(id,i), rename(id,name), refresh() } */
+  /** app: { lab, dev(id), meta(id), ifName(id,i), portCount(id), rename(id,name), refresh() } */
   constructor(app, devId, write) {
     this.app = app;
     this.id = devId;
@@ -96,6 +99,12 @@ export class SimShell {
 
   get dev() { return this.app.dev(this.id); }
   get isHost() { return this.dev?.kind === 'host'; }
+  ports() {
+    const d = this.dev;
+    if (!d) return [];
+    const n = this.app.portCount ? this.app.portCount(this.id) : d.ports.length;
+    return d.ports.slice(0, n);
+  }
   prompt() {
     const d = this.dev;
     if (!d) return '> ';
@@ -142,21 +151,34 @@ export class SimShell {
     if (c0 === 'reload') { this.app.lab.set_power(this.id, false); this.app.lab.set_power(this.id, true); return this.write('Reloading… tables cleared.\n', 'dim'); }
 
     if (this.isHost) {
+      if (c0 === 'show' && (c1 === 'interface' || (c1 === 'ip' && c2 === 'interface'))) return this.showIntBrief();
       if (c0 === 'show' && (!c1 || c1 === 'ip')) return this.showHostIp();
       if (c0 === 'ip' && !c1) return this.showHostIp();
       if (c0 === 'ip' && c1 === 'dhcp') throw new Error('DHCP is not modelled yet — set a static address: ip 10.0.0.5/24 10.0.0.1');
       if (c0 === 'ip') {
-        const a = parseAddr(t.slice(1));
-        if (!a) throw new Error('usage: ip <addr>/<len> [gateway]');
-        this.app.lab.set_ip(this.id, 0, a.ip, a.mask);
-        const gw = t[1 + a.used];
+        let port = 0, rest = t.slice(1);
+        if (c1 === 'address') {
+          port = this.port(t[2]);
+          rest = t.slice(3);
+        } else if (c1 && !parseAddr([c1])) {
+          port = this.port(c1);
+          rest = t.slice(2);
+        }
+        const a = parseAddr(rest);
+        if (!a) throw new Error('usage: ip [if] <addr>/<len> [gateway]');
+        this.app.lab.set_ip(this.id, port, a.ip, a.mask);
+        const gw = rest[a.used];
         if (gw) {
           if (!isIp(gw)) throw new Error(`bad gateway "${gw}"`);
           this.app.lab.set_gateway(this.id, gw);
         }
-        return this.write(`${d.name} : ${a.ip} ${a.mask}${gw ? ` gateway ${gw}` : ''}\n`);
+        return this.write(`${d.name} (${this.app.ifName(this.id, port)}) : ${a.ip} ${a.mask}${gw ? ` gateway ${gw}` : ''}\n`);
       }
-      if (c0 === 'clear' && c1 === 'ip') { this.app.lab.clear_ip(this.id, 0); return this.write('IPv4 address cleared\n'); }
+      if (c0 === 'clear' && c1 === 'ip') {
+        const port = c2 ? this.port(c2) : 0;
+        this.app.lab.clear_ip(this.id, port);
+        return this.write(`IPv4 address cleared on ${this.app.ifName(this.id, port)}\n`);
+      }
       if (c0 === 'arp' || (c0 === 'show' && c1 === 'arp')) return this.showArp();
       if (c0 === 'show' && c1 === 'route') return this.showRoute();
       throw new Error(`unknown command "${t[0]}" — type ?`);
@@ -203,21 +225,21 @@ export class SimShell {
   }
 
   port(name) {
-    const d = this.dev;
+    const ps = this.ports();
     if (name == null) throw new Error('interface required');
-    const i = d.ports.findIndex((_, i) => this.app.ifName(this.id, i) === name.toLowerCase());
+    const i = ps.findIndex((_, i) => this.app.ifName(this.id, i) === name.toLowerCase());
     if (i >= 0) return i;
-    if (/^\d+$/.test(name) && +name < d.ports.length) return +name;
-    throw new Error(`no interface "${name}" — have ${d.ports.map((_, i) => this.app.ifName(this.id, i)).join(', ')}`);
+    if (/^\d+$/.test(name) && +name < ps.length) return +name;
+    throw new Error(`no interface "${name}" — have ${ps.map((_, i) => this.app.ifName(this.id, i)).join(', ')}`);
   }
 
   portFor(ipStr) {
     const toN = s => s.split('.').reduce((a, o) => (a << 8 | +o) >>> 0, 0);
-    return this.dev.ports.findIndex(p => p.ip && ((toN(p.ip) & toN(p.mask)) >>> 0) === ((toN(ipStr) & toN(p.mask)) >>> 0));
+    return this.ports().findIndex(p => p.ip && ((toN(p.ip) & toN(p.mask)) >>> 0) === ((toN(ipStr) & toN(p.mask)) >>> 0));
   }
 
   tree() { return this.isHost ? HOST_TREE : ROUTER_TREE(this.dev?.kind === 'switch'); }
-  ifNames() { return (this.dev?.ports ?? []).map((_, i) => this.app.ifName(this.id, i)); }
+  ifNames() { return this.ports().map((_, i) => this.app.ifName(this.id, i)); }
 
   /** words valid at `level` that start with `part` ([{ w, d, slot }]) */
   options(level, part) {
@@ -289,11 +311,11 @@ export class SimShell {
 
   help() {
     const rows = this.isHost ? [
-      ['ip <addr>/<len> [gw]', 'set address and default gateway'],
-      ['show ip', 'show address, gateway, MAC'],
-      ['clear ip', 'remove the address'],
+      ['ip [if] <addr>/<len> [gw]', 'set address (on eth0 or <if>) and gateway'],
+      ['show ip | show interface', 'show addresses, gateway, MACs'],
+      ['clear ip [if]', 'remove address on eth0 or <if>'],
       ['ping <ip> [-c n]', 'send ICMP echo requests'],
-      ['arp', 'show the ARP cache'],
+      ['arp | show route', 'show ARP cache or routing table'],
       ['hostname <name>', 'rename this node'],
       ['clear | history | reload', ''],
     ] : [
@@ -318,15 +340,24 @@ export class SimShell {
   }
 
   showHostIp() {
-    const d = this.dev, p = d.ports[0];
+    const d = this.dev, ps = this.ports();
     const gw = d.routes.find(r => r.prefix === '0.0.0.0')?.next_hop;
-    this.write([
-      `NAME        : ${d.name}`,
-      `IP/MASK     : ${p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0'}`,
-      `GATEWAY     : ${gw ?? '0.0.0.0'}`,
-      `MAC         : ${p.mac}`,
-      `LINK        : ${this.linkState(0)}`,
-    ].join('\n') + '\n');
+    if (ps.length <= 1) {
+      const p = ps[0] ?? d.ports[0];
+      this.write([
+        `NAME        : ${d.name}`,
+        `IP/MASK     : ${p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0'}`,
+        `GATEWAY     : ${gw ?? '0.0.0.0'}`,
+        `MAC         : ${p.mac}`,
+        `LINK        : ${this.linkState(0)}`,
+      ].join('\n') + '\n');
+      return;
+    }
+    const rows = [`NAME        : ${d.name}`, `GATEWAY     : ${gw ?? '0.0.0.0'}`];
+    ps.forEach((p, i) => {
+      rows.push(`${pad(this.app.ifName(this.id, i).toUpperCase(), 12)}: ${pad(p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0', 18)} ${p.mac}  (${this.linkState(i)})`);
+    });
+    this.write(rows.join('\n') + '\n');
   }
 
   linkState(i) {
@@ -337,19 +368,19 @@ export class SimShell {
   }
 
   showIntBrief() {
-    const d = this.dev;
+    const ps = this.ports();
     const out = [`${pad('Interface', 12)}${pad('IP-Address', 18)}${pad('Status', 24)}MAC`];
-    d.ports.forEach((p, i) => out.push(
+    ps.forEach((p, i) => out.push(
       `${pad(this.app.ifName(this.id, i), 12)}${pad(p.ip ? `${p.ip}/${maskToLen(p.mask)}` : 'unassigned', 18)}${pad(this.linkState(i), 24)}${p.mac}`));
     this.write(out.join('\n') + '\n');
   }
 
   showRoute() {
-    const d = this.dev;
+    const d = this.dev, ps = this.ports();
     const out = ['Codes: C - connected, S - static, S* - default\n'];
     const toN = s => s.split('.').reduce((a, o) => (a << 8 | +o) >>> 0, 0);
     const fromN = n => [24, 16, 8, 0].map(s => (n >>> s) & 255).join('.');
-    d.ports.forEach((p, i) => {
+    ps.forEach((p, i) => {
       if (!p.ip) return;
       const net = fromN((toN(p.ip) & toN(p.mask)) >>> 0);
       out.push(`C     ${net}/${maskToLen(p.mask)} is directly connected, ${this.app.ifName(this.id, i)}`);
@@ -375,9 +406,9 @@ export class SimShell {
   }
 
   showRun() {
-    const d = this.dev;
+    const d = this.dev, ps = this.ports();
     const out = ['!', `hostname ${d.name}`, '!'];
-    d.ports.forEach((p, i) => {
+    ps.forEach((p, i) => {
       out.push(`interface ${this.app.ifName(this.id, i)}`);
       out.push(p.ip ? ` ip address ${p.ip} ${p.mask}` : ' no ip address');
       if (p.link == null) out.push(' shutdown');

@@ -11,8 +11,18 @@ No backend server, local agent, or cloud VM is required. Operating system images
 ## Features
 
 - **Hybrid Simulated + Emulated Fabric**
-  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, 8-port L2 learning Ethernet switches, and 4-port L3 IPv4 routers with ARP, static routing, and ICMP echo/reply.
+  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, and ICMP echo/reply.
   - **Real Emulated NOS (`Dynamips` & `v86` in WASM):** Wire real Cisco 7200 routers, MikroTik RouterOS v6 instances, and custom 32-bit x86 virtual machines directly into simulated switches and routers using real Ethernet frames.
+- **Multi-Ethernet Interface Support**
+  - Configure multi-homed hosts, bastion servers, routers, switches, and emulated VMs directly from the Inspector (**`+ Add`** / **`- Remove`** interface buttons).
+  - Supports up to **8 NICs** on End Hosts (`eth0`–`eth7`), Routers (`g0/0`–`g0/7`), Cisco 7200 (`f0/0`–`f7/0`), MikroTik RouterOS (`ether1`–`ether8`), and x86 VMs (`eth0`–`eth7` via multi-slot PCI `ne2k`), plus up to **16 ports** on Ethernet Switches (`e0`–`e15`).
+- **Topology Template Marketplace (25 Curated Labs · Beginner → Expert)**
+  - Press **`T`** (or click **Templates** in the top bar) to browse **25 ready-to-run network topologies** with auto-generated SVG schematics, difficulty tabs (`Beginner`, `Intermediate`, `Advanced`, `Expert`), category & tag filters, and step-by-step lab objectives:
+    - **Beginner (6):** Point-to-Point Ethernet, Switched LAN, Single-Router Subnets, Cascaded Switches, SOHO Home Gateway, CIDR/VLSM Subnetting.
+    - **Intermediate (7):** Branch Office (Cisco IOS Edge), Multi-Hop WAN Triangle, Multi-Homed DMZ Bastion, Hub-and-Spoke WAN, 5-Hop Traceroute Chain, Metro Fiber Ring, 3-Tier Microservices.
+    - **Advanced (6):** Campus 3-Tier Hierarchy, Dual-ISP Enterprise Edge, IXP 4-AS Peering Fabric, Industrial ICS/SCADA Purdue Model, Smart Hospital PACS/HL7 Campus, Multi-Region Anycast CDN.
+    - **Expert (6):** Leaf-Spine (Clos) Data Center, Multi-Vendor Emulation (Cisco IOS + RouterOS + x86 VM), 4-Region Full-Mesh ($K_4$) Core, Zero-Trust SOC Cyber Range (4-NIC SIEM), Carrier MPLS P/PE Core, AI/GPU Rail-Optimized Training Cluster.
+  - Publish any custom canvas topology to **My Templates** (`localStorage`) or export as `.netlab.json`.
 - **Realtime & Step-by-Step Simulation Modes**
   - **Realtime Mode:** Runs the switching/routing fabric at ~1 tick/ms so emulated OS guests experience LAN latency and responsive interactive consoles.
   - **Simulation Mode:** Packet Tracer–style visual packet animation across links with Play/Pause, single-tick stepping (`.`), and adjustable speed (`0.25×` to `4×`).
@@ -55,14 +65,14 @@ Then open **`http://localhost:8471`** in a modern desktop browser (Chromium, Fir
 
 Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; for emulated nodes, you supply your own images via **Lab → Images…** (or directly in the node inspector). Images are stored locally in your browser's `IndexedDB`.
 
-| Device | Type | Engine | Image Required | Interfaces |
+| Device | Type | Engine | Image Required | Interfaces (Default → Max) |
 |---|---|---|---|---|
-| **VPCS / Laptop / Server** | Simulated Host | `netlab-core` (Rust/WASM) | None (built-in) | `eth0` |
-| **Ethernet Switch** | Simulated L2 Switch | `netlab-core` (Rust/WASM) | None (built-in) | `e0` – `e7` (8 ports) |
-| **Router** | Simulated L3 Router | `netlab-core` (Rust/WASM) | None (built-in) | `g0/0` – `g0/3` (4 ports) |
-| **Cisco 7200** | Emulated Router | Dynamips → WASM | c7200 IOS `.bin` (uncompressed ELF) | `f0/0` – `f3/0` (4 × FastEthernet) |
-| **MikroTik RouterOS** | Emulated Router | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1` |
-| **x86 VM** | Emulated Host/Appliance | v86 (32-bit x86) | Any 32-bit x86 `.iso` or raw `.img` | `eth0` |
+| **VPCS / Laptop / Server** | Simulated Host | `netlab-core` (Rust/WASM) | None (built-in) | `eth0` → up to `eth7` (8 NICs) |
+| **Ethernet Switch** | Simulated L2 Switch | `netlab-core` (Rust/WASM) | None (built-in) | `e0`–`e7` → up to `e15` (16 ports) |
+| **Router** | Simulated L3 Router | `netlab-core` (Rust/WASM) | None (built-in) | `g0/0`–`g0/3` → up to `g0/7` (8 ports) |
+| **Cisco 7200** | Emulated Router | Dynamips → WASM | c7200 IOS `.bin` (uncompressed ELF) | `f0/0`–`f3/0` → up to `f7/0` (8 ports) |
+| **MikroTik RouterOS** | Emulated Router | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1`–`ether4` → up to `ether8` (8 NICs) |
+| **x86 VM** | Emulated Host/Appliance | v86 (32-bit x86) | Any 32-bit x86 `.iso` or raw `.img` | `eth0`–`eth1` → up to `eth7` (8 NICs) |
 
 ### Emulated Image Notes
 
@@ -79,7 +89,7 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
     qemu-img convert -O raw input.qcow2 output.img
     ```
   - Each VM's writable disk is persisted to `IndexedDB` ~8 seconds after guest disk writes and on node Stop. Orphans from deleted labs can be cleaned up in **Lab → Images…**.
-  - `v86` emulates a single NIC (`ne2k`/`virtio`), so x86 VMs expose one Ethernet interface. Note that RouterOS binds its initial MAC address into its disk configuration—cloning an already-installed raw disk across multiple nodes will also clone that MAC unless reset inside the guest.
+  - `v86` supports up to 8 PCI `ne2k` Ethernet adapters (`eth0`–`eth7`), each with a deterministic per-node/per-port MAC (`02:6e:00:xx:xx:pp`). Note that RouterOS binds its initial MAC addresses into its disk configuration—cloning an already-installed raw disk across multiple nodes will also clone those MACs unless reset inside the guest.
 - **Background Tab Throttling:**
   - Browsers throttle timers in background tabs, which slows down emulated guest traffic while the netlab tab is hidden.
 
@@ -92,10 +102,12 @@ Double-click any node on the canvas (or select it and open the **Console** tab i
 ### End Hosts (`VPCS` / `Laptop` / `Server`)
 
 ```text
-ip <addr/len> [gateway]     Configure IPv4 address, subnet mask, and optional default gateway
-                            Example: ip 192.168.10.11/24 192.168.10.1
-clear ip                    Remove the configured IPv4 address
-show ip                     Display IPv4 address, gateway, and MAC address
+ip [if] <addr/len> [gw]     Configure IPv4 address on eth0 (or specified ethN) and optional gateway
+                            Examples:
+                              ip 192.168.10.11/24 192.168.10.1
+                              ip eth1 10.0.20.11/24
+clear ip [if]               Remove the configured IPv4 address on eth0 (or specified ethN)
+show ip                     Display IPv4 addresses, gateway, and MAC addresses across all NICs
 show arp | arp              Display the ARP table
 show route                  Display the routing table
 ping <ip> [-c <count>]      Send ICMP echo requests
@@ -130,6 +142,7 @@ reload                      Clear learned ARP and MAC tables
 
 | Key | Action |
 |---|---|
+| `T` | Open **Topology Template Marketplace** (Beginner → Expert labs) |
 | `V` | Select tool |
 | `C` | Link (cable) tool |
 | `N` | Sticky note tool |
@@ -170,7 +183,8 @@ netlab/
 │   ├── shim/              # Minimal big/little-endian ELF32 loader shim (libelf)
 │   └── WASM-PORT.md       # Technical write-up of the Dynamips WebAssembly port
 └── web/                   # Zero-build ES module frontend
-    ├── main.js            # Canvas topology editor, simulation loop, inspector, storage
+    ├── main.js            # Canvas topology editor, simulation loop, inspector, marketplace UI
+    ├── templates.js       # 25 built-in topology templates (Beginner → Expert) + SVG previewer
     ├── cli.js             # Interactive VPCS & router/switch CLI with Tab/? completion
     ├── capture.js         # Packet dissector, hex viewer, and libpcap (.pcap) writer
     ├── ios.js             # Cisco 7200 worker manager & NVRAM sync
