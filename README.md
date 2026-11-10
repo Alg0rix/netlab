@@ -4,6 +4,8 @@
 
 No backend server, local agent, or cloud VM is required. Operating system images, NVRAM configurations, virtual disks, and topologies stay locally in your browser (`IndexedDB` / `localStorage`).
 
+![netlab running in the browser](docs/screenshot.png)
+
 ---
 
 ## Features
