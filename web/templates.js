@@ -985,8 +985,8 @@ export const BUILTIN_TEMPLATES = [
     summary: 'Global Content Delivery Network with US and EU Edge PoPs serving regional eyeballs and backhauling cache misses through an Origin Shield.',
     tags: ['CDN', 'Edge PoP', 'Origin Shield', 'Multi-Region'],
     objectives: [
-      'Ping `US-Edge-Cache` (`10.200.1.10`) from `US-User` (`172.16.1.10`) — notice it resolves in 1 router hop at the local US PoP.',
-      'Run `traceroute 10.200.99.50` from `US-User` or `EU-User` to trace a cache-miss backhaul path through `R-Origin-Shield` to `Origin-Storage`.',
+      'Ping `US-Edge-Cache` (`10.200.1.10`) from `US-Eyeball` (`172.16.1.10`) — notice it resolves in 1 router hop at the local US PoP.',
+      'Run `traceroute 10.200.99.50` from `US-Eyeball` or `EU-Eyeball` to trace a cache-miss backhaul path through `R-Origin-Shield` to `Origin-Storage`.',
       'Inspect `R-Origin-Shield` routing table connecting both trans-oceanic backhaul trunks (`10.254.1.0/30` and `10.254.2.0/30`).',
     ],
     build: () => ({
@@ -1000,7 +1000,7 @@ export const BUILTIN_TEMPLATES = [
           rt('172.16.2.0', 24, '10.254.2.2', 1),
           rt('10.200.2.0', 24, '10.254.2.2', 1),
         ]),
-        N(2, 'server', 'Origin-Storage', 460, 240, [ip('10.200.99.50', 24)], gw('10.200.99.1')),
+        N(2, 'server', 'Origin-Storage', 460, 240, [ip('10.200.99.50', 24)], gw('10.200.99.1'), { svc: { http: true } }),
         N(3, 'router', 'PoP-US-East', 200, 260, [
           ip('10.254.1.2', 30), ip('10.200.1.1', 24), ip('172.16.1.1', 24),
         ], [
@@ -1011,9 +1011,9 @@ export const BUILTIN_TEMPLATES = [
         ], [
           rt('0.0.0.0', 0, '10.254.2.1', 0),
         ]),
-        N(5, 'server', 'US-Edge-Cache', 90, 420, [ip('10.200.1.10', 24)], gw('10.200.1.1')),
+        N(5, 'server', 'US-Edge-Cache', 90, 420, [ip('10.200.1.10', 24)], gw('10.200.1.1'), { svc: { http: true } }),
         N(6, 'pc', 'US-Eyeball', 260, 420, [ip('172.16.1.10', 24)], gw('172.16.1.1')),
-        N(7, 'server', 'EU-Edge-Cache', 660, 420, [ip('10.200.2.10', 24)], gw('10.200.2.1')),
+        N(7, 'server', 'EU-Edge-Cache', 660, 420, [ip('10.200.2.10', 24)], gw('10.200.2.1'), { svc: { http: true } }),
         N(8, 'laptop', 'EU-Eyeball', 830, 420, [ip('172.16.2.10', 24)], gw('172.16.2.1')),
       ],
       links: [
