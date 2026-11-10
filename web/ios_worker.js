@@ -90,10 +90,18 @@ onmessage = async (e) => {
       }
       M.FS.writeFile('/ios.bin', new Uint8Array(m.image));
       if (m.nvram) {
-        // Dynamips names the file per its naming mode; seed both spellings
+        // Dynamips names the file per its naming mode; seed both c7200 nvram and c3725/c3745/c2691 rom
         const nv = new Uint8Array(m.nvram);
         M.FS.writeFile('/c7200_i0_nvram', nv);
         M.FS.writeFile('/c7200_default_nvram', nv);
+        if (nv.length === 0x1c000) {
+          const rom = new Uint8Array(2 * 1048576);
+          rom.set(nv, 0xe0000);
+          for (const p of ['c3725', 'c3745', 'c2691', 'c3600']) {
+            M.FS.writeFile(`/${p}_i0_rom`, rom);
+            M.FS.writeFile(`/${p}_default_rom`, rom);
+          }
+        }
         lastNvHash = fnv(nv);
         post({ type: 'log', msg: `restored NVRAM (${nv.length} bytes) from browser storage` });
       }

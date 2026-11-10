@@ -26,12 +26,33 @@ const routerArrows = `
     <path d="M6-3v6h8v5l9-8-9-8v5z" transform="translate(1 0)"/>
   </g>`;
 
+const swBox = (id, top1, top2, side1, side2, right, portFill, ledFill, badge) => `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="${id}t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${top1}"/><stop offset="1" stop-color="${top2}"/></linearGradient>
+    <linearGradient id="${id}s" x1="0" x2="1"><stop offset="0" stop-color="${side1}"/><stop offset=".5" stop-color="${side2}"/><stop offset="1" stop-color="${side1}"/></linearGradient>
+  </defs>
+  <path d="M4 30l12-10h44L48 30z" fill="url(#${id}t)"/>
+  <path d="M4 30h44v14H4z" fill="url(#${id}s)"/>
+  <path d="M48 30l12-10v14L48 44z" fill="${right}"/>
+  <g fill="#fff">
+    <path d="M18 21.9h22v-1.5l5 2.2-5 2.2v-1.5H18z"/>
+    <path d="M44 27.5H21v1.5l-5-2.2 5-2.2v1.5h23z"/>
+  </g>
+  <g fill="${portFill}">${[0, 1, 2, 3, 4, 5].map(i => `<rect x="${6.5 + i * 4.5}" y="35" width="3.2" height="3" rx=".6"/>`).join('')}</g>
+  <g fill="${ledFill}">${[0, 1, 2, 3, 4, 5].map(i => `<rect x="${7 + i * 4.5}" y="40" width="2.2" height="1.2" rx=".5"/>`).join('')}</g>
+  <text x="40.5" y="39.8" text-anchor="middle" font-family="system-ui,sans-serif" font-size="7.2" font-weight="800" fill="#fff" fill-opacity=".95">${badge}</text>
+</svg>`;
+
 const SVG = {
   router: cyl('rt', '#5aa9ff', '#2f7de1', '#1b4f99', routerArrows),
   ios: cyl('io', '#3fd3c4', '#119f94', '#0a5e58', routerArrows + `
     <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">IOS</text>`),
   routeros: cyl('mk', '#b495ff', '#7a55e0', '#45308a', routerArrows + `
     <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">ROS</text>`),
+  'ios-sw': swBox('isw', '#3fd3c4', '#119f94', '#0a5e58', '#119f94', '#074540', '#042e2b', '#8effd4', 'IOS'),
+  'mikrotik-sw': swBox('msw', '#b495ff', '#7a55e0', '#45308a', '#6d48d1', '#322069', '#22144a', '#7ff0a8', 'CRS'),
+  'ovs-sw': swBox('osw', '#ffb86b', '#e07a2e', '#8f4610', '#c96820', '#6e3409', '#3d1c04', '#7ff0a8', 'OVS'),
   x86: `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs><linearGradient id="vmg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb86b"/><stop offset="1" stop-color="#e07a2e"/></linearGradient></defs>
@@ -93,8 +114,11 @@ export const TEMPLATES = [
   { id: 'server', kind: 'host', label: 'Server', sub: 'End host, dual NIC default', group: 'End devices', prefix: 'Server', ports: 2, maxPorts: 8 },
   { id: 'switch', kind: 'switch', label: 'Ethernet switch', sub: '8–16 port L2, MAC learning', group: 'Switching', prefix: 'SW', ports: 8, maxPorts: 16 },
   { id: 'router', kind: 'router', label: 'Router', sub: '4–8 port L3, static routes', group: 'Routing', prefix: 'R', ports: 4, maxPorts: 8 },
-  { id: 'ios', kind: 'ext', emu: 'dynamips', label: 'Cisco 7200', sub: 'Real IOS · your image', group: 'Emulated', prefix: 'IOS', ports: 4, maxPorts: 7 },
+  { id: 'ios', kind: 'ext', emu: 'dynamips', label: 'Cisco 7200', sub: 'Real IOS · your image', group: 'Emulated', prefix: 'IOS', ports: 4, maxPorts: 8 },
+  { id: 'ios-sw', kind: 'ext', emu: 'dynamips', label: 'Cisco Switch', sub: 'IOS L2/L3 switch · 8–16 ports', group: 'Emulated', prefix: 'CSW', ports: 8, maxPorts: 16 },
   { id: 'routeros', kind: 'ext', emu: 'v86', label: 'MikroTik RouterOS', sub: 'RouterOS v6 x86 · 4× Ethernet', group: 'Emulated', prefix: 'MT', ports: 4, maxPorts: 8 },
+  { id: 'mikrotik-sw', kind: 'ext', emu: 'v86', label: 'MikroTik CRS Switch', sub: 'RouterOS bridge/VLAN · 8 ports', group: 'Emulated', prefix: 'CRS', ports: 8, maxPorts: 8 },
+  { id: 'ovs-sw', kind: 'ext', emu: 'v86', label: 'Open vSwitch / Linux', sub: 'x86 L2/VLAN switch · 8 ports', group: 'Emulated', prefix: 'OVS', ports: 8, maxPorts: 8 },
   { id: 'x86', kind: 'ext', emu: 'v86', label: 'x86 VM', sub: '32-bit x86 ISO/disk · multi-NIC', group: 'Emulated', prefix: 'VM', ports: 4, maxPorts: 8 },
 ];
 export const tpl = id => TEMPLATES.find(t => t.id === id);
@@ -123,7 +147,10 @@ export function ifName(template, i) {
     case 'switch': return `e${i}`;
     case 'router': return `g0/${i}`;
     case 'ios': return `f${i}/0`;
-    case 'routeros': return `ether${i + 1}`;
+    case 'ios-sw': return `fa1/${i}`;
+    case 'routeros':
+    case 'mikrotik-sw': return `ether${i + 1}`;
+    case 'ovs-sw': return `eth${i}`;
     default: return `eth${i}`;
   }
 }

@@ -244,6 +244,9 @@ int nl_nvram_ptr(void)
       if (d && d->host_addr) {
          p = (int)(uintptr_t)d->host_addr;
          nl_nvram_size = (int)d->phys_len;
+      } else if ((d = dev_get_by_name(vm, "rom")) && d->host_addr && d->phys_len >= 0xFC000) {
+         p = (int)((uintptr_t)d->host_addr + 0xE0000);
+         nl_nvram_size = 0x1C000;
       }
       vm_release(vm);
    }

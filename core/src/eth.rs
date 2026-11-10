@@ -198,10 +198,47 @@ pub fn encode(f: &Frame) -> Option<Vec<u8>> {
 pub fn raw_label(raw: &[u8]) -> String {
     if raw.len() >= 14 {
         match u16be(raw, 12) {
-            0x0800 => "IP".into(),
+            0x0800 => {
+                if raw.len() >= 24 && (raw[14] >> 4) == 4 {
+                    match raw[23] {
+                        6 => "TCP".into(),
+                        17 => "UDP".into(),
+                        47 => "GRE".into(),
+                        88 => "EIGRP".into(),
+                        89 => "OSPF".into(),
+                        112 => "VRRP".into(),
+                        _ => "IP".into(),
+                    }
+                } else {
+                    "IP".into()
+                }
+            }
             0x0806 => "ARP".into(),
-            0x8100 => "802.1Q".into(),
+            0x8100 => {
+                if raw.len() >= 18 {
+                    let vid = u16be(raw, 14) & 0x0FFF;
+                    format!("802.1Q VLAN {}", vid)
+                } else {
+                    "802.1Q".into()
+                }
+            }
+            0x88a8 => "802.1ad QinQ".into(),
+            0x88cc => "LLDP".into(),
+            0x8809 => "LACP".into(),
             0x86dd => "IPv6".into(),
+            t if t <= 1500 => {
+                if raw[0..6] == [0x01, 0x80, 0xc2, 0x00, 0x00, 0x00]
+                    || (raw.len() >= 17 && raw[14] == 0x42 && raw[15] == 0x42)
+                {
+                    "STP BPDU".into()
+                } else if raw[0..6] == [0x01, 0x00, 0x0c, 0xcc, 0xcc, 0xcd] {
+                    "PVST+ BPDU".into()
+                } else if raw[0..6] == [0x01, 0x00, 0x0c, 0xcc, 0xcc, 0xcc] {
+                    "CDP/VTP".into()
+                } else {
+                    "802.3 LLC".into()
+                }
+            }
             t => format!("ethertype 0x{:04x}", t),
         }
     } else {

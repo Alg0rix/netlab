@@ -118,7 +118,7 @@ impl Topology {
             DeviceKind::Host => 8,
             DeviceKind::Switch => 16,
             DeviceKind::Router => 8,
-            DeviceKind::Ext => 8,
+            DeviceKind::Ext => 16,
         };
         let macs = (0..n_ports).map(|_| self.alloc_mac()).collect();
         self.devices

@@ -93,13 +93,72 @@ export class IOSNode {
   terminate() { this.kill(); }
 }
 
-/** Default dynamips args for a c7200 router.
- *  nPAs fast-ethernet PAs mapped to NIO link ids 0..nPAs-1 (slot0=IO-FE). */
-export function iosArgs(nPAs = 3, ram = 256) {
+/** Detect Dynamips platform from the ELF32 e_machine header (big-endian u16 at offset 18). */
+export function detectIosPlatform(buf) {
+  if (!buf || buf.byteLength < 20) return '7200';
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf, 0, 20);
+  if (u8[0] !== 0x7f || u8[1] !== 0x45 || u8[2] !== 0x4c || u8[3] !== 0x46) return '7200';
+  const mach = (u8[18] << 8) | u8[19];
+  switch (mach) {
+    case 0x61: return '3725';
+    case 0x69: return '3745';
+    case 0x66: return '2691';
+    case 0x1e:
+    case 0x34: return '3600';
+    case 0x19:
+    default:   return '7200';
+  }
+}
+
+/** Build Dynamips CLI arguments for a Cisco IOS router or managed L2/L3 switch.
+ *  - On c3725/c3745/c2691/c3600 images:
+ *      * Switch mode (`isSwitch: true`) installs `NM-16ESW` in slot 1 (16× FastEthernet hardware switchports `Fa1/0`–`Fa1/15`).
+ *      * Router mode uses integrated dual FastEthernet (`Fa0/0`, `Fa0/1`) + `NM-16ESW` for ports 2..nPorts-1.
+ *  - On c7200 images:
+ *      * Switch mode (`isSwitch: true`) installs 8-port Ethernet modules `PA-8E` in slots 1..2 (`Et1/0`–`Et1/7`, `Et2/0`–`Et2/7`) for IEEE 802.1D / IRB bridging.
+ *      * Router mode uses `C7200-IO-FE` (or `C7200-IO-2FE` when 8 ports) + `PA-FE-TX` in slots 1..6. */
+export function iosArgs(nPorts = 4, opts = {}) {
+  const o = typeof opts === 'number' ? { ram: opts } : (opts || {});
+  const platform = o.platform || '7200';
+  const ram = o.ram || 256;
+  const isSwitch = !!o.isSwitch;
+  const n = Math.max(1, Math.min(isSwitch ? 16 : 8, nPorts));
+
+  if (platform !== '7200') {
+    const args = ['-P', platform, '-r', String(ram)];
+    if (isSwitch) {
+      args.push('-p', '1:NM-16ESW');
+      for (let i = 0; i < n; i++) args.push('-s', `1:${i}:wasm:${i}`);
+    } else {
+      for (let i = 0; i < Math.min(2, n); i++) args.push('-s', `0:${i}:wasm:${i}`);
+      if (n > 2) {
+        args.push('-p', '1:NM-16ESW');
+        for (let i = 2; i < n; i++) args.push('-s', `1:${i - 2}:wasm:${i}`);
+      }
+    }
+    args.push('/ios.bin');
+    return args;
+  }
+
   const args = ['-P', '7200', '-r', String(ram)];
-  for (let i = 0; i < nPAs; i++) {
-    args.push('-p', `${i}:${i === 0 ? 'C7200-IO-FE' : 'PA-FE-TX'}`);
-    args.push('-s', `${i}:0:wasm:${i}`);
+  if (isSwitch) {
+    args.push('-p', '0:C7200-IO-FE');
+    args.push('-p', '1:PA-8E');
+    for (let i = 0; i < Math.min(8, n); i++) args.push('-s', `1:${i}:wasm:${i}`);
+    if (n > 8) {
+      args.push('-p', '2:PA-8E');
+      for (let i = 8; i < n; i++) args.push('-s', `2:${i - 8}:wasm:${i}`);
+    }
+  } else if (n <= 7) {
+    for (let i = 0; i < n; i++) {
+      args.push('-p', `${i}:${i === 0 ? 'C7200-IO-FE' : 'PA-FE-TX'}`);
+      args.push('-s', `${i}:0:wasm:${i}`);
+    }
+  } else {
+    args.push('-p', '0:C7200-IO-2FE', '-s', '0:0:wasm:0', '-s', '0:1:wasm:1');
+    for (let i = 2; i < n; i++) {
+      args.push('-p', `${i - 1}:PA-FE-TX`, '-s', `${i - 1}:0:wasm:${i}`);
+    }
   }
   args.push('/ios.bin');
   return args;

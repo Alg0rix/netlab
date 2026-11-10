@@ -1421,6 +1421,128 @@ export const BUILTIN_TEMPLATES = [
       ],
     }),
   },
+
+  {
+    id: 'cisco-switch-vlan-stp',
+    title: 'Cisco Switch: 802.1Q VLAN Trunking, SVIs & PVST+',
+    level: 'advanced',
+    category: 'Emulated (IOS & v86)',
+    summary: 'Dual Cisco IOS managed switches (NM-16ESW / PA-8E) interconnected with redundant 802.1Q trunks running Spanning Tree (PVST+ / IEEE 802.1D) and inter-VLAN routing.',
+    tags: ['Cisco Switch', 'NM-16ESW', '802.1Q Trunk', 'PVST+ / STP', 'Inter-VLAN SVI'],
+    objectives: [
+      'Attach a Cisco c3725 IOS image (or c7200 image) to `CSW-Core1` and `CSW-Core2` and boot both switches.',
+      'Create VLAN 10 (Engineering `10.10.10.0/24`) and VLAN 20 (Production `10.10.20.0/24`) in `vlan database`, configure `fa1/0` and `fa1/1` as `switchport mode trunk`, and assign access ports `fa1/2` (`VLAN 10`) and `fa1/3` (`VLAN 20`).',
+      'Right-click `fa1/0` to capture real IEEE 802.1Q tagged frames, PVST+ / 802.1D BPDUs, and CDP announcements on the wire.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'Cisco Switch VLANs & PVST+',
+      nodes: [
+        N(1, 'ios-sw', 'CSW-Core1', 310, 260, [], [], { portCount: 8 }),
+        N(2, 'ios-sw', 'CSW-Core2', 610, 260, [], [], { portCount: 8 }),
+        N(3, 'pc', 'Eng-PC1', 110, 150, [ip('10.10.10.11', 24)], gw('10.10.10.1')),
+        N(4, 'pc', 'Prod-PC1', 110, 380, [ip('10.10.20.11', 24)], gw('10.10.20.1')),
+        N(5, 'server', 'Eng-Srv2', 810, 150, [ip('10.10.10.12', 24)], gw('10.10.10.1')),
+        N(6, 'server', 'Prod-Srv2', 810, 380, [ip('10.10.20.12', 24)], gw('10.10.20.1')),
+      ],
+      links: [
+        L(1, 0, 2, 0),
+        L(1, 1, 2, 1),
+        L(1, 2, 3, 0),
+        L(1, 3, 4, 0),
+        L(2, 2, 5, 0),
+        L(2, 3, 6, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 230, 170, 460, 185, '#2fd0c0', 'Dual Cisco IOS Switches · Redundant 802.1Q Trunks (fa1/0 & fa1/1)'),
+        S(2, 'rect', 40, 85, 160, 130, '#4c9bff', 'VLAN 10 · 10.10.10.0/24'),
+        S(3, 'rect', 725, 85, 160, 130, '#4c9bff', 'VLAN 10 · 10.10.10.0/24'),
+        S(4, 'rect', 40, 315, 160, 130, '#3ccf7e', 'VLAN 20 · 10.10.20.0/24'),
+        S(5, 'rect', 725, 315, 160, 130, '#3ccf7e', 'VLAN 20 · 10.10.20.0/24'),
+      ],
+      notes: [
+        { id: 1, x: 250, y: 45, text: 'Cisco Catalyst / NM-16ESW Managed Switch Lab\n• fa1/0 & fa1/1: 802.1Q Trunks + Spanning-Tree / Port-Channel\n• fa1/2: switchport access vlan 10 · fa1/3: switchport access vlan 20\n• Configure interface Vlan10 (10.10.10.1/24) & Vlan20 (10.10.20.1/24) for L3 SVI routing' },
+      ],
+    }),
+  },
+
+  {
+    id: 'mikrotik-crs-vlan-rstp',
+    title: 'MikroTik CRS Switch: Bridge VLAN Filtering & Router-on-a-Stick',
+    level: 'advanced',
+    category: 'Emulated (IOS & v86)',
+    summary: 'MikroTik CRS managed switch running RouterOS Bridge VLAN Filtering and RSTP across 8 Ethernet ports with an upstream MikroTik RouterOS 802.1Q trunk.',
+    tags: ['MikroTik CRS', 'Bridge VLAN Filtering', 'RSTP', '802.1Q Trunk'],
+    objectives: [
+      'Boot `CRS-Switch` and `MT-Router` with a RouterOS v6 x86 image.',
+      'On `CRS-Switch`, create an RSTP VLAN-filtering bridge (`/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp`), make `ether1` a tagged trunk for VLANs 10 & 20, and assign `ether2..ether3` (PVID 10) and `ether4..ether5` (PVID 20).',
+      'On `MT-Router`, create `/interface vlan` sub-interfaces on `ether1` for VLAN 10 (`10.10.0.1/24`) and VLAN 20 (`10.20.0.1/24`) and ping across VLANs.',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'MikroTik CRS Bridge VLANs & RSTP',
+      nodes: [
+        N(1, 'routeros', 'MT-Router', 460, 110, [], [], { portCount: 4 }),
+        N(2, 'mikrotik-sw', 'CRS-Switch', 460, 290, [], [], { portCount: 8 }),
+        N(3, 'pc', 'VLAN10-PC1', 150, 440, [ip('10.10.0.10', 24)], gw('10.10.0.1')),
+        N(4, 'laptop', 'VLAN10-Laptop', 340, 460, [ip('10.10.0.20', 24)], gw('10.10.0.1')),
+        N(5, 'pc', 'VLAN20-PC2', 580, 460, [ip('10.20.0.10', 24)], gw('10.20.0.1')),
+        N(6, 'server', 'VLAN20-Server', 770, 440, [ip('10.20.0.50', 24)], gw('10.20.0.1')),
+      ],
+      links: [
+        L(1, 0, 2, 0),
+        L(2, 1, 3, 0),
+        L(2, 2, 4, 0),
+        L(2, 3, 5, 0),
+        L(2, 4, 6, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 320, 45, 280, 310, '#a58bff', 'MikroTik RouterOS + CRS Managed Switch (802.1Q Trunk on ether1)'),
+        S(2, 'rect', 80, 385, 340, 140, '#4c9bff', 'VLAN 10 Access Ports (ether2–3) · 10.10.0.0/24'),
+        S(3, 'rect', 510, 385, 340, 140, '#3ccf7e', 'VLAN 20 Access Ports (ether4–5) · 10.20.0.0/24'),
+      ],
+      notes: [
+        { id: 1, x: 40, y: 55, text: 'MikroTik CRS Switch CLI:\n/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp\n/interface bridge port\nadd bridge=br0 interface=ether1\nadd bridge=br0 interface=ether2 pvid=10\nadd bridge=br0 interface=ether3 pvid=10\nadd bridge=br0 interface=ether4 pvid=20\nadd bridge=br0 interface=ether5 pvid=20\n/interface bridge vlan\nadd bridge=br0 tagged=ether1 untagged=ether2,ether3 vlan-ids=10\nadd bridge=br0 tagged=ether1 untagged=ether4,ether5 vlan-ids=20' },
+      ],
+    }),
+  },
+
+  {
+    id: 'multivendor-managed-switching',
+    title: 'Multi-Vendor Switching Ring: Cisco Switch + MikroTik CRS + Open vSwitch',
+    level: 'expert',
+    category: 'Emulated (IOS & v86)',
+    summary: 'Three-vendor Layer-2 switching triangle combining a Cisco IOS Switch, a MikroTik CRS Switch, and an Open vSwitch / Linux Switch with IEEE 802.1Q trunks and Spanning Tree loop prevention.',
+    tags: ['Cisco Switch', 'MikroTik CRS', 'Open vSwitch', 'STP Ring', '802.1Q Interop'],
+    objectives: [
+      'Boot `CSW-1` (Cisco IOS Switch), `CRS-1` (MikroTik CRS Switch), and `OVS-1` (Open vSwitch / Linux VM) in the triangle topology.',
+      'Enable IEEE 802.1D / RSTP Spanning Tree on all three switches and watch BPDUs negotiate a loop-free topology on the wire capture.',
+      'Configure VLAN 10 across the inter-switch trunks and verify end-to-end ping between `Host-Cisco` (`10.50.10.11`), `Host-MikroTik` (`10.50.10.12`), and `Host-OVS` (`10.50.10.13`).',
+    ],
+    build: () => ({
+      format: 'netlab', version: 1, name: 'Multi-Vendor Managed Switch Ring',
+      nodes: [
+        N(1, 'ios-sw', 'CSW-1', 460, 130, [], [], { portCount: 8 }),
+        N(2, 'mikrotik-sw', 'CRS-1', 260, 370, [], [], { portCount: 8 }),
+        N(3, 'ovs-sw', 'OVS-1', 660, 370, [], [], { portCount: 8 }),
+        N(4, 'pc', 'Host-Cisco', 460, 30, [ip('10.50.10.11', 24)]),
+        N(5, 'pc', 'Host-MikroTik', 90, 450, [ip('10.50.10.12', 24)]),
+        N(6, 'server', 'Host-OVS', 830, 450, [ip('10.50.10.13', 24)]),
+      ],
+      links: [
+        L(1, 0, 2, 0),
+        L(1, 1, 3, 0),
+        L(2, 1, 3, 1),
+        L(1, 2, 4, 0),
+        L(2, 2, 5, 0),
+        L(3, 2, 6, 0),
+      ],
+      shapes: [
+        S(1, 'rect', 190, 85, 540, 355, '#f2b84b', 'Multi-Vendor L2 Switching Ring · IEEE 802.1Q Trunks + Spanning Tree'),
+      ],
+      notes: [
+        { id: 1, x: 30, y: 80, text: 'Multi-Vendor L2 Interop\n• CSW-1: Cisco IOS Switch (NM-16ESW / PA-8E)\n• CRS-1: MikroTik CRS (RouterOS Bridge + RSTP)\n• OVS-1: Open vSwitch / Linux Bridge\n• Capture any trunk to inspect STP BPDUs & 802.1Q tags' },
+      ],
+    }),
+  },
 ];
 
 export const userTemplates = {
@@ -1457,7 +1579,10 @@ export function allTemplates() {
 const NODE_COLOR = {
   router: '#4c9bff',
   ios: '#2fd0c0',
+  'ios-sw': '#2fd0c0',
   routeros: '#a58bff',
+  'mikrotik-sw': '#a58bff',
+  'ovs-sw': '#f2b84b',
   x86: '#f2b84b',
   switch: '#62b4ff',
   pc: '#7cc4ff',
@@ -1503,7 +1628,7 @@ export function renderTemplatePreviewSVG(data) {
   const nodeEls = nodes.map(n => {
     const col = NODE_COLOR[n.tpl] ?? '#7cc4ff';
     const cx = tx(n.x), cy = ty(n.y);
-    const isSw = n.tpl === 'switch';
+    const isSw = n.tpl === 'switch' || n.tpl === 'ios-sw' || n.tpl === 'mikrotik-sw' || n.tpl === 'ovs-sw';
     const isSrv = n.tpl === 'server' || n.tpl === 'x86';
     const glyph = isSw
       ? `<rect x="${(cx - 8).toFixed(1)}" y="${(cy - 5).toFixed(1)}" width="16" height="10" rx="2.5" fill="#12161d" stroke="${col}" stroke-width="1.8"/>`

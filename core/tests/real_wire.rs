@@ -101,3 +101,34 @@ fn guest_ping_gets_a_reply_a_real_stack_accepts() {
     assert_eq!(&icmp[6..8], &7u16.to_be_bytes(), "sequence echoed");
     assert_eq!(&icmp[8..], &payload[..], "payload echoed");
 }
+
+#[test]
+fn managed_switch_16_ports_and_l2_multicast_vlan_forwarding() {
+    let mut t = Topology::new();
+    let csw1 = t.add_device(DeviceKind::Ext, "CSW1".into(), 0.0, 0.0);
+    let csw2 = t.add_device(DeviceKind::Ext, "CSW2".into(), 0.0, 0.0);
+    let sw = t.add_device(DeviceKind::Switch, "SW".into(), 0.0, 0.0);
+
+    // Connect high-numbered NM-16ESW switchports (fa1/15 <-> SW <-> fa1/14)
+    assert!(t.add_link_ports(csw1, 15, sw, 0).is_some(), "Ext supports 16 ports (0..15)");
+    assert!(t.add_link_ports(sw, 1, csw2, 14).is_some());
+
+    // 1. IEEE 802.1D STP BPDU multicast (01:80:c2:00:00:00) must flood through Switch
+    let mut bpdu = vec![0x01, 0x80, 0xc2, 0x00, 0x00, 0x00];
+    bpdu.extend_from_slice(&[0xc2, 0x01, 0x00, 0x00, 0x00, 0x0f]); // src MAC
+    bpdu.extend_from_slice(&[0x00, 0x26, 0x42, 0x42, 0x03]); // 802.3 len + LLC
+    bpdu.extend_from_slice(&[0u8; 35]);
+    t.ext_inject(csw1, 15, &bpdu);
+    let rx = run_until_ext(&mut t, 40);
+    assert!(rx.iter().any(|f| f == &bpdu), "STP BPDU multicast forwarded intact to peer switch");
+
+    // 2. IEEE 802.1Q VLAN-tagged frame (EtherType 0x8100, VLAN 10) must pass intact
+    let mut vlan_frame = vec![0xff; 6];
+    vlan_frame.extend_from_slice(&[0xc2, 0x01, 0x00, 0x00, 0x00, 0x0f]);
+    vlan_frame.extend_from_slice(&[0x81, 0x00, 0x00, 0x0a, 0x08, 0x06]); // 802.1Q VID 10 + ARP
+    vlan_frame.extend_from_slice(&[0u8; 28]);
+    t.ext_inject(csw1, 15, &vlan_frame);
+    let rx2 = run_until_ext(&mut t, 40);
+    assert!(rx2.iter().any(|f| f == &vlan_frame), "802.1Q VLAN 10 frame forwarded intact");
+}
+

@@ -8,8 +8,12 @@ const mac = (b, o) => Array.from(b.subarray(o, o + 6), x => hex(x)).join(':');
 const ip = (b, o) => `${b[o]}.${b[o + 1]}.${b[o + 2]}.${b[o + 3]}`;
 const u16 = (b, o) => (b[o] << 8) | b[o + 1];
 
-const ETHERTYPES = { 0x0800: 'IPv4', 0x0806: 'ARP', 0x86dd: 'IPv6', 0x8100: '802.1Q', 0x9000: 'Loopback' };
-const IPPROTO = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 89: 'OSPF', 88: 'EIGRP' };
+const ETHERTYPES = {
+  0x0800: 'IPv4', 0x0806: 'ARP', 0x86dd: 'IPv6',
+  0x8100: '802.1Q', 0x88a8: '802.1ad QinQ',
+  0x88cc: 'LLDP', 0x8809: 'LACP', 0x9000: 'Loopback',
+};
+const IPPROTO = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 47: 'GRE', 88: 'EIGRP', 89: 'OSPF', 112: 'VRRP' };
 const ICMPTYPE = { 0: 'Echo (ping) reply', 3: 'Destination unreachable', 8: 'Echo (ping) request', 11: 'Time exceeded' };
 
 /**
@@ -21,23 +25,63 @@ export function dissect(b) {
   const out = { proto: 'ETH', src: '', dst: '', info: '', tree };
   if (b.length < 14) { out.info = 'Truncated frame'; return out; }
 
-  let et = u16(b, 12), off = 14;
+  let et = u16(b, 12), off = 14, vlanId = null;
   out.src = mac(b, 6); out.dst = mac(b, 0);
   const eth = {
     title: `Ethernet II, Src: ${mac(b, 6)}, Dst: ${mac(b, 0)}`, range: [0, 14], fields: [
-      { k: 'Destination', v: mac(b, 0) + (b[0] === 0xff && b[5] === 0xff ? ' (Broadcast)' : ''), range: [0, 6] },
+      { k: 'Destination', v: mac(b, 0) + (b[0] === 0xff && b[5] === 0xff ? ' (Broadcast)' : (b[0] & 1) ? ' (Multicast)' : ''), range: [0, 6] },
       { k: 'Source', v: mac(b, 6), range: [6, 12] },
-      { k: 'Type', v: `${ETHERTYPES[et] ?? 'Unknown'} (0x${hex(et, 4)})`, range: [12, 14] },
+      { k: 'Type / Length', v: et < 0x0600 ? `802.3 Length (${et} bytes)` : `${ETHERTYPES[et] ?? 'Unknown'} (0x${hex(et, 4)})`, range: [12, 14] },
     ],
   };
   tree.push(eth);
-  if (et < 0x0600) { out.proto = 'LLC'; out.info = `802.3 length ${et}`; return out; }
-  if (et === 0x8100 && b.length >= 18) {
-    tree.push({ title: `802.1Q Virtual LAN, VID: ${u16(b, 14) & 0xfff}`, range: [14, 18], fields: [
-      { k: 'Priority', v: String(b[14] >> 5), range: [14, 15] },
-      { k: 'ID', v: String(u16(b, 14) & 0xfff), range: [14, 16] },
+  while ((et === 0x8100 || et === 0x88a8) && b.length >= off + 4) {
+    const vid = u16(b, off) & 0xfff;
+    vlanId = vid;
+    tree.push({ title: `${et === 0x88a8 ? '802.1ad S-VLAN' : '802.1Q Virtual LAN'}, PRI: ${b[off] >> 5}, VID: ${vid}`, range: [off, off + 4], fields: [
+      { k: 'Priority (PCP)', v: String(b[off] >> 5), range: [off, off + 1] },
+      { k: 'DEI / CFI', v: String((b[off] >> 4) & 1), range: [off, off + 1] },
+      { k: 'VLAN ID (VID)', v: String(vid), range: [off, off + 2] },
+      { k: 'Encapsulated Type', v: `0x${hex(u16(b, off + 2), 4)}`, range: [off + 2, off + 4] },
     ] });
-    et = u16(b, 16); off = 18;
+    et = u16(b, off + 2); off += 4;
+  }
+  const vlanPrefix = vlanId != null ? `[VLAN ${vlanId}] ` : '';
+  if (et < 0x0600) {
+    // IEEE 802.3 / LLC (STP BPDU, PVST+ BPDU, CDP/VTP)
+    const isStpMac = b[0] === 0x01 && b[1] === 0x80 && b[2] === 0xc2 && b[3] === 0x00 && b[4] === 0x00 && b[5] === 0x00;
+    const isCiscoMcast = b[0] === 0x01 && b[1] === 0x00 && b[2] === 0x0c && b[3] === 0xcc && b[4] === 0xcc;
+    if ((isStpMac || (isCiscoMcast && b[5] === 0xcd)) && b.length >= off + 7) {
+      const bpduOff = (b[off] === 0xaa && b[off + 1] === 0xaa) ? off + 8 : off + 3;
+      const isPvst = isCiscoMcast && b[5] === 0xcd;
+      out.proto = isPvst ? 'PVST+' : 'STP';
+      if (b.length >= bpduOff + 27) {
+        const bpduType = b[bpduOff + 3];
+        const rootPri = u16(b, bpduOff + 5);
+        const rootMac = mac(b, bpduOff + 7);
+        const bridgePri = u16(b, bpduOff + 17);
+        const bridgeMac = mac(b, bpduOff + 19);
+        const portId = u16(b, bpduOff + 25);
+        out.info = `${vlanPrefix}${bpduType === 0x02 ? 'RSTP' : isPvst ? 'PVST+' : 'STP'} BPDU · Root=${rootPri}/${rootMac} Bridge=${bridgePri}/${bridgeMac} Port=0x${hex(portId, 4)}`;
+        tree.push({ title: `Spanning Tree Protocol (${out.proto})`, range: [off, b.length], fields: [
+          { k: 'BPDU Type', v: `0x${hex(bpduType)} (${bpduType === 0x02 ? 'Rapid/MST' : bpduType === 0x80 ? 'Topology Change' : 'Configuration'})`, range: [bpduOff + 3, bpduOff + 4] },
+          { k: 'Root Identifier', v: `${rootPri} / ${rootMac}`, range: [bpduOff + 5, bpduOff + 13] },
+          { k: 'Bridge Identifier', v: `${bridgePri} / ${bridgeMac}`, range: [bpduOff + 17, bpduOff + 25] },
+          { k: 'Port Identifier', v: `0x${hex(portId, 4)}`, range: [bpduOff + 25, bpduOff + 27] },
+        ] });
+      } else {
+        out.info = `${vlanPrefix}${out.proto} BPDU (${et} bytes)`;
+      }
+      return out;
+    }
+    if (isCiscoMcast && b[5] === 0xcc) {
+      out.proto = 'CDP/VTP';
+      out.info = `${vlanPrefix}Cisco Discovery / VTP Frame (${et} bytes)`;
+      return out;
+    }
+    out.proto = 'LLC';
+    out.info = `${vlanPrefix}802.3 length ${et}`;
+    return out;
   }
 
   if (et === 0x0806 && b.length >= off + 28) {

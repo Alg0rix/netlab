@@ -226,10 +226,23 @@ index b6666ee..de67f5d 100644
  
     MV64460_LOCK(d);
 diff --git a/common/dev_nm_16esw.c b/common/dev_nm_16esw.c
-index 96320a1..f2be983 100644
+index 96320a1..11528fa 100644
 --- a/common/dev_nm_16esw.c
 +++ b/common/dev_nm_16esw.c
-@@ -2254,8 +2254,9 @@ static int bcm5600_handle_tx_pkt(struct nm_16esw_data *d,
+@@ -1243,10 +1243,11 @@ static int bcm5600_reset_arl(struct nm_16esw_data *d)
+ }
+ 
+ /* MAC Address Ager */
+-static int bcm5600_arl_ager(struct nm_16esw_data *d)
++static int bcm5600_arl_ager(struct nm_16esw_data *d, void *_nl_unused)
+ {
+    m_uint32_t *entry,*last_entry;
+    int i;
++   (void)_nl_unused;
+ 
+    BCM_LOCK(d);
+ 
+@@ -2254,8 +2255,9 @@ static int bcm5600_handle_tx_pkt(struct nm_16esw_data *d,
  }
  
  /* Handle the TX ring */

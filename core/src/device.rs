@@ -234,7 +234,8 @@ impl Device {
         tick: u64,
         events: &mut Vec<SimEvent>,
     ) {
-        if self.mac_table.get(&frame.src_mac) != Some(&in_port) {
+        let src_is_mcast = ((frame.src_mac >> 40) & 1) == 1 || frame.src_mac == 0;
+        if !src_is_mcast && self.mac_table.get(&frame.src_mac) != Some(&in_port) {
             self.mac_table.insert(frame.src_mac, in_port);
             events.push(SimEvent::new(
                 tick,
@@ -244,8 +245,12 @@ impl Device {
                 format!("{}: learned {} on port {}", self.name, mac_str(frame.src_mac), in_port),
             ));
         }
+        let dst_is_mcast = ((frame.dst_mac >> 40) & 1) == 1 || frame.dst_mac == BROADCAST_MAC;
         match self.mac_table.get(&frame.dst_mac) {
-            Some(&out) if out != in_port && frame.dst_mac != BROADCAST_MAC => {
+            Some(&out) if !dst_is_mcast && out == in_port => {
+                // Destination is on the ingress segment; filter frame.
+            }
+            Some(&out) if !dst_is_mcast && out != in_port => {
                 events.push(SimEvent::new(
                     tick,
                     Some(self.id),

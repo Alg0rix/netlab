@@ -1,6 +1,6 @@
 # netlab
 
-**netlab** is a zero-backend network simulation and emulation lab that runs entirely in the browser. It combines a deterministic **Rust → WebAssembly** L2/L3 switching and routing fabric with real hardware emulation compiled to WebAssembly—booting real **Cisco 7200 IOS** images via Dynamips and **MikroTik RouterOS / 32-bit x86 VMs** via v86 on the same virtual wire.
+**netlab** is a zero-backend network simulation and emulation lab that runs entirely in the browser. It combines a deterministic **Rust → WebAssembly** L2/L3 switching and routing fabric with real hardware emulation compiled to WebAssembly—booting real **Cisco IOS routers & switches** (`c7200` / `c3725` with `NM-16ESW` 16-port EtherSwitch ASIC) via Dynamips and **MikroTik RouterOS / CRS Switches / Open vSwitch (Linux) / 32-bit x86 VMs** via v86 on the same virtual wire.
 
 No backend server, local agent, or cloud VM is required. Operating system images, NVRAM configurations, virtual disks, and topologies stay locally in your browser (`IndexedDB` / `localStorage`).
 
@@ -12,25 +12,29 @@ No backend server, local agent, or cloud VM is required. Operating system images
 
 - **Hybrid Simulated + Emulated Fabric**
   - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, and ICMP echo/reply.
-  - **Real Emulated NOS (`Dynamips` & `v86` in WASM):** Wire real Cisco 7200 routers, MikroTik RouterOS v6 instances, and custom 32-bit x86 virtual machines directly into simulated switches and routers using real Ethernet frames.
+  - **Real Emulated Routers & Managed Switches (`Dynamips` & `v86` in WASM):**
+    - **Cisco 7200 Router (`ios`):** Full Cisco IOS L3 router (`f0/0`–`f6/0` + `f0/1`).
+    - **Cisco Switch (`ios-sw`):** Up to 16-port managed L2/L3 switch via Dynamips **`NM-16ESW`** hardware EtherSwitch module (`fa1/0`–`fa1/15` on `c3725`/`c3745`/`c2691` images with hardware 802.1Q VLANs, Trunking, VTP, PVST+/STP, Port-Channel, and L3 SVIs) or **`PA-8E`** bridge groups (`e1/0`–`e2/7` on `c7200` images).
+    - **MikroTik RouterOS (`routeros`) & MikroTik CRS Switch (`mikrotik-sw`):** Real RouterOS v6 x86 with 8 Ethernet ports (`ether1`–`ether8`), Bridge VLAN Filtering (`802.1Q` / `802.1ad` QinQ), STP/RSTP/MSTP, LACP (`802.3ad`), OSPF, BGP, VRRP, MPLS, and Firewall/NAT.
+    - **Open vSwitch / Linux Switch (`ovs-sw`) & x86 VM (`x86`):** 8-port 32-bit x86 VM (`eth0`–`eth7`) for running Linux with Open vSwitch (`ovs-vsctl`), `iproute2` VLAN-aware bridges, FRRouting, or custom appliances.
 - **Multi-Ethernet Interface Support**
   - Configure multi-homed hosts, bastion servers, routers, switches, and emulated VMs directly from the Inspector (**`+ Add`** / **`- Remove`** interface buttons).
-  - Supports up to **8 NICs** on End Hosts (`eth0`–`eth7`), Routers (`g0/0`–`g0/7`), Cisco 7200 (`f0/0`–`f7/0`), MikroTik RouterOS (`ether1`–`ether8`), and x86 VMs (`eth0`–`eth7` via multi-slot PCI `ne2k`), plus up to **16 ports** on Ethernet Switches (`e0`–`e15`).
-- **Topology Template Marketplace (25 Curated Labs · Beginner → Expert)**
-  - Press **`T`** (or click **Templates** in the top bar) to browse **25 ready-to-run network topologies** with auto-generated SVG schematics, difficulty tabs (`Beginner`, `Intermediate`, `Advanced`, `Expert`), category & tag filters, and step-by-step lab objectives:
+  - Supports up to **8 NICs** on End Hosts (`eth0`–`eth7`), Routers (`g0/0`–`g0/7`), Cisco 7200 (`f0/0`–`f6/0`, `f0/1`), MikroTik RouterOS & CRS Switch (`ether1`–`ether8`), Open vSwitch & x86 VMs (`eth0`–`eth7`), and up to **16 ports** on Ethernet Switches (`e0`–`e15`) and Cisco Switches (`fa1/0`–`fa1/15`).
+- **Topology Template Marketplace (28 Curated Labs · Beginner → Expert)**
+  - Press **`T`** (or click **Templates** in the top bar) to browse **28 ready-to-run network topologies** with auto-generated SVG schematics, difficulty tabs (`Beginner`, `Intermediate`, `Advanced`, `Expert`), category & tag filters, and step-by-step lab objectives:
     - **Beginner (6):** Point-to-Point Ethernet, Switched LAN, Single-Router Subnets, Cascaded Switches, SOHO Home Gateway, CIDR/VLSM Subnetting.
     - **Intermediate (7):** Branch Office (Cisco IOS Edge), Multi-Hop WAN Triangle, Multi-Homed DMZ Bastion, Hub-and-Spoke WAN, 5-Hop Traceroute Chain, Metro Fiber Ring, 3-Tier Microservices.
-    - **Advanced (6):** Campus 3-Tier Hierarchy, Dual-ISP Enterprise Edge, IXP 4-AS Peering Fabric, Industrial ICS/SCADA Purdue Model, Smart Hospital PACS/HL7 Campus, Multi-Region Anycast CDN.
-    - **Expert (6):** Leaf-Spine (Clos) Data Center, Multi-Vendor Emulation (Cisco IOS + RouterOS + x86 VM), 4-Region Full-Mesh ($K_4$) Core, Zero-Trust SOC Cyber Range (4-NIC SIEM), Carrier MPLS P/PE Core, AI/GPU Rail-Optimized Training Cluster.
+    - **Advanced (8):** Campus 3-Tier Hierarchy, Dual-ISP Enterprise Edge, IXP 4-AS Peering Fabric, Industrial ICS/SCADA Purdue Model, Smart Hospital PACS/HL7 Campus, Multi-Region Anycast CDN, **Cisco Switch 802.1Q VLAN Trunking & PVST+**, **MikroTik CRS Bridge VLAN Filtering & RSTP**.
+    - **Expert (7):** Leaf-Spine (Clos) Data Center, Multi-Vendor Emulation (Cisco IOS + RouterOS + x86 VM), 4-Region Full-Mesh ($K_4$) Core, Zero-Trust SOC Cyber Range (4-NIC SIEM), Carrier MPLS P/PE Core, AI/GPU Rail-Optimized Training Cluster, **Multi-Vendor Managed Switching Ring (Cisco Switch + MikroTik CRS + Open vSwitch)**.
   - Publish any custom canvas topology to **My Templates** (`localStorage`) or export as `.netlab.json`.
 - **Realtime & Step-by-Step Simulation Modes**
   - **Realtime Mode:** Runs the switching/routing fabric at ~1 tick/ms so emulated OS guests experience LAN latency and responsive interactive consoles.
   - **Simulation Mode:** Packet Tracer–style visual packet animation across links with Play/Pause, single-tick stepping (`.`), and adjustable speed (`0.25×` to `4×`).
 - **Built-in Packet Capture & Wireshark Export**
-  - Attach a live sniffer to any link. Inspect frames with a built-in protocol dissector (Ethernet II, 802.1Q, ARP, IPv4, ICMP, TCP, UDP, OSPF, EIGRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
+  - Attach a live sniffer to any link. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
 - **Interactive Consoles**
   - **Simulated CLI:** Built-in VPCS shell for hosts and a Cisco-like CLI for switches and routers featuring Tab completion, command abbreviation (`sh ip int br`, `sh ip ro`, `sh run`), and contextual `?` help.
-  - **Emulated Terminals:** Full `xterm.js` serial console and VGA screen tabs for Cisco IOS, RouterOS, and x86 VMs.
+  - **Emulated Terminals:** Full `xterm.js` serial console and VGA screen tabs for Cisco IOS, RouterOS, Open vSwitch, and x86 VMs.
 - **Diagramming & Portable Labs**
   - Infinite pan/zoom canvas with grid snap, minimap, interface labels, sticky notes, vector shapes (rectangles, ellipses, lines), dark/light theme toggle, PNG diagram export, and portable `.netlab.json` topology files.
 
@@ -70,19 +74,25 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
 | **VPCS / Laptop / Server** | Simulated Host | `netlab-core` (Rust/WASM) | None (built-in) | `eth0` → up to `eth7` (8 NICs) |
 | **Ethernet Switch** | Simulated L2 Switch | `netlab-core` (Rust/WASM) | None (built-in) | `e0`–`e7` → up to `e15` (16 ports) |
 | **Router** | Simulated L3 Router | `netlab-core` (Rust/WASM) | None (built-in) | `g0/0`–`g0/3` → up to `g0/7` (8 ports) |
-| **Cisco 7200** | Emulated Router | Dynamips → WASM | c7200 IOS `.bin` (uncompressed ELF) | `f0/0`–`f3/0` → up to `f7/0` (8 ports) |
+| **Cisco 7200** | Emulated Router | Dynamips → WASM | `c7200` / `c3725` IOS `.bin` (uncompressed ELF) | `f0/0`–`f3/0` → up to 8 FastEthernet ports |
+| **Cisco Switch** | Emulated Managed L2/L3 Switch | Dynamips (`NM-16ESW` / `PA-8E`) → WASM | `c3725` IOS `.bin` (recommended for `NM-16ESW`) or `c7200` IOS `.bin` | `fa1/0`–`fa1/7` → up to `fa1/15` (16 switchports) |
 | **MikroTik RouterOS** | Emulated Router | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1`–`ether4` → up to `ether8` (8 NICs) |
+| **MikroTik CRS Switch** | Emulated Managed Switch | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1`–`ether8` (8 switchports) |
+| **Open vSwitch / Linux** | Emulated Managed Switch | v86 (32-bit x86) | 32-bit Linux `.iso` or raw `.img` (with OVS / `iproute2`) | `eth0`–`eth7` (8 switchports) |
 | **x86 VM** | Emulated Host/Appliance | v86 (32-bit x86) | Any 32-bit x86 `.iso` or raw `.img` | `eth0`–`eth1` → up to `eth7` (8 NICs) |
 
 ### Emulated Image Notes
 
-- **Cisco 7200 IOS (`Dynamips`):**
-  - Supply an uncompressed `c7200` IOS `.bin` ELF image (if your image is a compressed `.bin`, decompress it first with `unzip -p image.bin > image.unpacked.bin`).
-  - NVRAM (`write memory` / `copy running-config startup-config`) is automatically snapshotted to `IndexedDB` and is embedded inside exported `.netlab.json` lab files so your router configs travel with the lab.
-- **MikroTik RouterOS (`v86`):**
+- **Cisco 7200 Router & Cisco Switch (`Dynamips`):**
+  - Supply an uncompressed `c3725` or `c7200` IOS `.bin` ELF image (if your image is a compressed `.bin`, decompress it first with `unzip -p image.bin > image.unpacked.bin`).
+  - **Cisco Switch (`ios-sw`):** Automatically detects the IOS image platform from the ELF header:
+    - With a **`c3725` / `c3745` / `c2691`** image (e.g. `c3725-adventerprisek9-mz.124-15.T14.bin`), netlab inserts the **`NM-16ESW`** 16-port hardware EtherSwitch module (`FastEthernet1/0`–`FastEthernet1/15` backed by Dynamips's Broadcom BCM5600 ASIC emulation), giving you full Cisco Catalyst–style CLI (`vlan database`, `switchport mode access/trunk`, `spanning-tree vlan`, `channel-group`, and `interface Vlan<id>`).
+    - With a **`c7200`** image, netlab inserts **`PA-8E`** 8-port Ethernet adapters (`Ethernet1/0`–`Ethernet2/7`), supporting IEEE 802.1D Spanning Tree and Integrated Routing and Bridging (`bridge irb`, `bridge 1 protocol ieee`, `bridge-group 1`, `interface BVI1`).
+  - NVRAM (`write memory` / `copy running-config startup-config`) is automatically snapshotted to `IndexedDB` on both `c7200` and `c3725` platforms and is embedded inside exported `.netlab.json` lab files.
+- **MikroTik RouterOS & MikroTik CRS Switch (`v86`):**
   - **Use RouterOS v6 (32-bit x86)**, e.g., `mikrotik-6.49.18.iso`. MikroTik CHR and RouterOS v7 require a 64-bit CPU (`x86-64`) and cannot boot in `v86`.
   - On first boot from an ISO, open the node's **Screen** tab and install RouterOS onto the node's blank virtual disk (press `a`, `i`, `n`, `y`, then `Enter` to reboot). Subsequent boots run directly from the installed per-node disk and use the **Serial** console tab.
-  - Without a license key, RouterOS v6 runs in free trial mode with a 24-hour uptime countdown shown at login.
+  - On **MikroTik CRS Switch (`mikrotik-sw`)**, all 8 `ether1`–`ether8` interfaces are enabled by default so you can configure `/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp`, `/interface bridge port`, `/interface bridge vlan`, and `/interface bonding`.
 - **General x86 VMs & Virtual Disks:**
   - Disk images must be **raw** format. Convert `qcow2`, `vmdk`, or `vdi` images beforehand:
     ```sh

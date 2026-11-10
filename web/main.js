@@ -1,5 +1,5 @@
 import init, { NetLab } from './pkg/netlab_wasm.js';
-import { IOSNode, iosArgs } from './ios.js';
+import { IOSNode, iosArgs, detectIosPlatform } from './ios.js';
 import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
 import { dissect, hexRows, toPcap, TICK_MS } from './capture.js';
@@ -96,7 +96,10 @@ function refresh() {
 }
 
 const tplOf = id => meta.get(id)?.tpl ?? byId.get(id)?.kind ?? 'pc';
-const ifName = (id, i) => ifNameFor(tplOf(id), i);
+const ifName = (id, i) => {
+  if (tplOf(id) === 'ios-sw' && meta.get(id)?.iosPlatform === '7200') return `e${1 + (i >> 3)}/${i & 7}`;
+  return ifNameFor(tplOf(id), i);
+};
 const portCount = id => {
   const d = byId.get(id);
   const t = tpl(tplOf(id));
@@ -228,7 +231,9 @@ function dirty() {
 /* ════════════════════════════ node lifecycle ════════════════════════════ */
 
 const isVM = id => tpl(tplOf(id))?.emu === 'v86';
-const isIOS = id => tplOf(id) === 'ios';
+const isIOS = id => tpl(tplOf(id))?.emu === 'dynamips';
+const isIOSSwitch = id => tplOf(id) === 'ios-sw';
+const isRos = id => tplOf(id) === 'routeros' || tplOf(id) === 'mikrotik-sw';
 
 function registerNode(id, tplId, name, image = null, uid = null, vm = null, ports = null) {
   const t = tpl(tplId);
@@ -257,7 +262,7 @@ function registerNode(id, tplId, name, image = null, uid = null, vm = null, port
     disks.info(m.uid).then(r => { if (r) { m.diskSaved = r.saved; m.diskSize = r.size; renderInspectorSoon(); } });
     emus.set(id, node);
   }
-  if (tplId === 'ios') {
+  if (t?.emu === 'dynamips') {
     const node = new IOSNode(id, name);
     // IOS `write memory` → NVRAM snapshot from the worker → IndexedDB
     node.onNvram = data => nvram.put(m.uid, data).then(rec => {
@@ -351,10 +356,13 @@ async function startNode(id) {
   const rec = await images.get(name);
   if (!rec) return toast(`Image ${name} is missing — upload it again`, 'err');
   node.name = d.name;
+  const platform = detectIosPlatform(rec.data);
+  meta.get(id).iosPlatform = platform;
   const nv = await nvram.get(meta.get(id).uid);
-  node.boot(rec.data, iosArgs(portCount(id)), nv?.data ?? null);
+  node.boot(rec.data, iosArgs(portCount(id), { isSwitch: isIOSSwitch(id), platform }), nv?.data ?? null);
   openConsole(id);
-  pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${name} (${(rec.size / 1e6).toFixed(1)} MB)` });
+  renderAll();
+  pushEvent({ tick: snap.tick, device: id, link: null, kind: 'sys', msg: `${d.name}: booting ${name} (c${platform}, ${(rec.size / 1e6).toFixed(1)} MB)` });
 }
 
 async function startVM(id) {
@@ -1727,14 +1735,17 @@ const KIND_LABEL = { ios: 'IOS', iso: 'ISO', disk: 'Disk' };
 function imageManager(forDev = null) {
   return new Promise(resolve => {
     const want = forDev == null ? null : isVM(forDev) ? ['iso', 'disk'] : ['ios'];
-    const isRos = forDev != null && tplOf(forDev) === 'routeros';
+    const ros = forDev != null && isRos(forDev);
+    const csw = forDev != null && isIOSSwitch(forDev);
     const help = want == null
-      ? 'Cisco 7200 IOS images (<span class="mono">.bin</span>), x86 install ISOs and raw disk images (<span class="mono">.iso</span>, <span class="mono">.img</span>).'
+      ? 'Cisco IOS images (<span class="mono">c3725</span>/<span class="mono">c7200</span> <span class="mono">.bin</span>), x86 install ISOs and raw disk images (<span class="mono">.iso</span>, <span class="mono">.img</span>).'
       : want[0] === 'ios'
-        ? 'Use a Cisco 7200 IOS image you are licensed to run, e.g. <span class="mono">c7200-adventerprisek9-mz.152-4.S5.bin</span>.'
-        : isRos
+        ? csw
+          ? 'Use a Cisco <b>c3725</b> IOS image (recommended for 16-port <span class="mono">NM-16ESW</span> hardware VLAN/STP switching, e.g. <span class="mono">c3725-adventerprisek9-mz.124-15.T14.bin</span>) or a <b>c7200</b> IOS image (uses <span class="mono">PA-8E</span> IEEE 802.1D / IRB bridge groups).'
+          : 'Use a Cisco 7200 or 3725 IOS image you are licensed to run, e.g. <span class="mono">c7200-adventerprisek9-mz.152-4.S5.bin</span>.'
+        : ros
           ? 'Use the <b>RouterOS v6 x86</b> install ISO (e.g. <span class="mono">mikrotik-6.49.18.iso</span> from mikrotik.com) or a raw disk with v6 installed. CHR and RouterOS v7 are 64-bit and cannot run in this 32-bit emulator.'
-          : 'Any 32-bit x86 install ISO or raw disk image. Convert qcow2/VMDK/VDI first: <span class="mono">qemu-img convert -O raw in.qcow2 out.img</span>.';
+          : 'Any 32-bit x86 install ISO or raw disk image (Linux + Open vSwitch / iproute2 bridge, Alpine, TinyCore, etc.). Convert qcow2/VMDK/VDI first: <span class="mono">qemu-img convert -O raw in.qcow2 out.img</span>.';
     const accept = want == null ? '.bin,.image,.iso,.img,.raw' : want[0] === 'ios' ? '.bin,.image' : '.iso,.img,.raw';
     const body = h(`<div>
       <div class="callout">${ico('info')}<div>Images stay in this browser (IndexedDB) and are never uploaded anywhere. ${help}</div></div>
@@ -1935,24 +1946,32 @@ function nodeInspector(id) {
 
   if (isVM(id)) root.append(vmSettings(id, d, st));
   if (isExt && !isVM(id)) {
-    const img = meta.get(id).image;
+    const m = meta.get(id);
+    const img = m.image;
     const nPorts = portCount(id);
+    const csw = isIOSSwitch(id);
+    const plat = m.iosPlatform || (img && /3725/.test(img) ? '3725' : img && /3745/.test(img) ? '3745' : img && /2691/.test(img) ? '2691' : csw ? '3725 / 7200' : '7200');
+    const adapters = csw
+      ? (plat === '7200' ? `${nPorts <= 8 ? '1×' : '2×'} PA-8E (${nPorts}× Ethernet)` : `NM-16ESW (${nPorts}× FastEthernet L2/L3)`)
+      : (plat !== '7200' && plat !== '3725 / 7200'
+        ? `GT96100-FE${nPorts > 2 ? ` + NM-16ESW (${nPorts} ports)` : ''}`
+        : `${nPorts >= 8 ? 'C7200-IO-2FE' : 'C7200-IO-FE'}${nPorts > 1 ? ` + ${nPorts >= 8 ? 6 : nPorts - 1}× PA-FE-TX` : ''}`);
     const s = h(`<div class="sect"><h4>Image</h4>
       <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${img ? esc(img) : '<span class="muted">none selected</span>'}</span>
       <button class="btn sm" data-img>${ico('image')}${img ? 'Change' : 'Choose'}</button></div>
-      <dl class="kv" style="margin-top:10px"><dt>Platform</dt><dd>c7200 · NPE-400</dd><dt>RAM</dt><dd>256 MB</dd>
-      <dt>Adapters</dt><dd>C7200-IO-FE${nPorts > 1 ? ` + ${nPorts - 1}× PA-FE-TX` : ''}</dd></dl>
+      <dl class="kv" style="margin-top:10px"><dt>Platform</dt><dd>c${esc(plat)}${plat === '7200' ? ' · NPE-400' : ''}</dd><dt>RAM</dt><dd>256 MB</dd>
+      <dt>Adapters</dt><dd>${esc(adapters)}</dd></dl>
+      ${csw ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>NM-16ESW (c3725)</b>: <span class="mono">vlan database</span> → <span class="mono">vlan 10</span>, <span class="mono">interface fa1/0</span> → <span class="mono">switchport mode access</span> / <span class="mono">trunk</span>, <span class="mono">spanning-tree vlan 1</span>.<br><b>PA-8E (c7200)</b>: <span class="mono">bridge irb</span>, <span class="mono">bridge 1 protocol ieee</span>, <span class="mono">interface e1/0</span> → <span class="mono">bridge-group 1</span>.</p>` : ''}
       ${crossOriginIsolated ? '' : '<p class="muted" style="margin-top:8px">This page is not cross-origin isolated, so IOS cannot boot here. Serve with COOP/COEP (<span class="mono">make serve</span>).</p>'}</div>`);
     $('[data-img]', s).onclick = () => chooseImage(id);
     root.append(s);
 
-    const m = meta.get(id);
     const when = m.nvSaved ? new Date(m.nvSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
     const cfg = h(`<div class="sect"><h4>Startup config</h4>
       <p style="margin:0 0 8px">${when
         ? `<span class="pill ok"><span class="dot running"></span>Saved in this browser</span> <span class="muted" style="font-size:12px">${esc(when)}</span>`
         : '<span class="muted">Nothing saved yet. Run <span class="mono">write memory</span> in the console — NVRAM is kept in this browser and restored on the next start.</span>'}</p>
-      ${when ? `<button class="btn sm danger" data-erase ${st !== 'stopped' ? 'disabled title="Stop the router first"' : ''}>${ico('trash')}Erase NVRAM</button>` : ''}</div>`);
+      ${when ? `<button class="btn sm danger" data-erase ${st !== 'stopped' ? 'disabled title="Stop the node first"' : ''}>${ico('trash')}Erase NVRAM</button>` : ''}</div>`);
     const er = $('[data-erase]', cfg);
     if (er) er.onclick = async () => {
       if (!(await confirmBox('Erase NVRAM', `Delete the saved startup-config of ${d.name}? It boots with a blank config next time.`, 'Erase', true))) return;
@@ -1967,14 +1986,14 @@ function nodeInspector(id) {
   // interfaces
   const n = portCount(id);
   const maxP = Math.min(d.ports.length, t.maxPorts ?? d.ports.length);
-  const portOpts = isSw ? [4, 8, 12, 16] : isIOS(id) ? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 6, 8];
+  const portOpts = (isSw || isIOSSwitch(id)) ? [4, 8, 12, 16] : isIOS(id) ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4, 6, 8];
   const validOpts = [...new Set([...portOpts.filter(v => v <= maxP), n])].sort((a, b) => a - b);
   const lockPorts = isExt && st !== 'stopped';
   const ifs = h(`<div class="sect"><h4>Interfaces<span class="spacer"></span>
     <select class="field" data-ports style="width:auto;padding:2px 6px;height:22px;font-size:11px;text-transform:none;letter-spacing:0" ${lockPorts ? 'disabled title="Stop the node to change NIC count"' : ''}>
       ${validOpts.map(v => `<option value="${v}" ${v === n ? 'selected' : ''}>${v} port${v === 1 ? '' : 's'}</option>`).join('')}
     </select></h4><table class="iftable"><thead><tr><th>Name</th><th>${isSw ? 'Connected to' : 'IPv4 / prefix'}</th>${isSw ? '' : '<th>Peer</th>'}</tr></thead><tbody></tbody></table>
-    ${isExt ? `<p class="muted" style="margin:8px 0 0">Addresses are configured inside the ${isVM(id) ? 'guest (console)' : 'IOS console'}.</p>` : ''}</div>`);
+    ${isExt ? `<p class="muted" style="margin:8px 0 0">Addresses &amp; VLANs are configured inside the ${isVM(id) ? 'guest (console)' : 'IOS console'}.</p>` : ''}</div>`);
   $('[data-ports]', ifs).onchange = e => setNodePorts(id, +e.target.value);
   const tb = $('tbody', ifs);
   for (let i = 0; i < n; i++) {
@@ -2074,14 +2093,18 @@ function nodeInspector(id) {
 
 function vmSettings(id, d, st) {
   const m = meta.get(id), running = st !== 'stopped';
-  const ros = tplOf(id) === 'routeros';
+  const ros = isRos(id);
+  const msw = tplOf(id) === 'mikrotik-sw';
+  const osw = tplOf(id) === 'ovs-sw';
   const nics = portCount(id);
   const when = m.diskSaved ? new Date(m.diskSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
   const root = h(`<div>
     <div class="sect"><h4>Image</h4>
       <div class="row"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.image ? esc(m.image) : '<span class="muted">none selected</span>'}</span>
       <button class="btn sm" data-img>${ico('image')}${m.image ? 'Change' : 'Choose'}</button></div>
-      ${ros ? `<p class="muted" style="margin:8px 0 0;font-size:12px">First start boots the RouterOS v6 x86 ISO on the <b>Screen</b> tab: press <span class="mono">a</span> then <span class="mono">i</span>, answer <span class="mono">n</span>, <span class="mono">y</span>, then Enter to reboot into the installed system. Login <span class="mono">admin</span>, empty password. The Serial tab is the router console after that.</p>` : ''}
+      ${ros ? `<p class="muted" style="margin:8px 0 0;font-size:12px">First start boots the RouterOS v6 x86 ISO on the <b>Screen</b> tab: press <span class="mono">a</span> then <span class="mono">i</span>, answer <span class="mono">n</span>, <span class="mono">y</span>, then Enter to reboot into the installed system. Login <span class="mono">admin</span>, empty password. The Serial tab is the console after that.</p>` : ''}
+      ${msw ? `<p class="muted" style="margin:6px 0 0;font-size:12px"><b>CRS Bridge VLANs &amp; RSTP</b>: <span class="mono">/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp</span> and add <span class="mono">ether1..ether8</span> under <span class="mono">/interface bridge port</span>.</p>` : ''}
+      ${osw ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>Open vSwitch / Linux Bridge</b>: configure L2 switching, 802.1Q VLAN trunks, STP/RSTP, or LACP bonding across <span class="mono">eth0..eth7</span> using <span class="mono">ovs-vsctl</span> or <span class="mono">ip link add br0 type bridge vlan_filtering 1</span>.</p>` : ''}
     </div>
     <div class="sect"><h4>Hardware</h4>
       <div class="kv">
