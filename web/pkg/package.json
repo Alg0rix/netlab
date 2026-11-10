@@ -1,0 +1,14 @@
+{
+  "name": "netlab-wasm",
+  "version": "0.1.0",
+  "files": [
+    "netlab_wasm_bg.wasm",
+    "netlab_wasm.js",
+    "netlab_wasm.d.ts"
+  ],
+  "module": "netlab_wasm.js",
+  "types": "netlab_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

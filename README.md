@@ -67,7 +67,24 @@ make serve
 Then open **`http://localhost:8471`** in a modern desktop browser (Chromium, Firefox, or Safari).
 
 > **Why `make serve`?**
-> Emulated Cisco IOS uses WebAssembly pthreads backed by `SharedArrayBuffer`, which requires the page to be served in a cross-origin isolated context (`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`). `web/serve.py` sets these headers automatically. If you host `web/` on static hosting (Cloudflare Pages, Vercel, Netlify, GitHub Pages + service worker, or Nginx), configure those two HTTP response headers to enable Cisco IOS nodes.
+> Emulated Cisco IOS uses WebAssembly pthreads backed by `SharedArrayBuffer`, which requires the page to be served in a cross-origin isolated context (`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`). `web/serve.py` sets these headers automatically, and netlab ships `web/_headers` with the same policy for hosts that honor it (including Cloudflare). On other static hosting (Vercel, Netlify, GitHub Pages + service worker, or Nginx), configure those two HTTP response headers to enable Cisco IOS nodes.
+
+---
+
+## Deploy to Cloudflare
+
+Host your own copy as a Cloudflare Worker serving the static `web/` directory — no build step needed, the prebuilt `web/pkg/` wasm-bindgen output and COOP/COEP `_headers` are committed:
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Alg0rix/netlab)
+
+The button clones the repository into your GitHub account and deploys it to a `<name>.<subdomain>.workers.dev` URL. Or deploy from the command line with [Wrangler](https://developers.cloudflare.com/workers/wrangler/):
+
+```sh
+npx wrangler login
+npx wrangler deploy
+```
+
+To attach a custom domain, add it under `routes` in [`wrangler.jsonc`](wrangler.jsonc) (the zone must be active on your Cloudflare account). `make wasm` is only needed if you modify `core/` or `wasm/`.
 
 ---
 

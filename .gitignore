@@ -1,6 +1,7 @@
 # Rust / wasm-pack output
 target/
-web/pkg/
+# wasm-pack regenerates this; the pkg artifacts themselves are committed
+web/pkg/.gitignore
 
 # Upstream Dynamips checkout — recreated by emu/fetch-dynamips.sh (+ emu/dynamips.patch)
 emu/dynamips/
