@@ -11,12 +11,14 @@ No backend server, local agent, or cloud VM is required. Operating system images
 ## Features
 
 - **Hybrid Simulated + Emulated Fabric**
-  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, and ICMP echo/reply.
+  - **Simulated Nodes (`netlab-core` in Rust/WASM):** Instant-boot virtual PCs (VPCS), laptops, servers, L2 learning Ethernet switches (up to 16 ports), and L3 IPv4 routers (up to 8 ports) with ARP, static routing, ICMP, DHCP (client and server), DNS, HTTP, TCP/UDP probes, and source NAT (masquerade).
   - **Real Emulated Routers & Managed Switches (`Dynamips` & `v86` in WASM):**
     - **Cisco 7200 Router (`ios`):** Full Cisco IOS L3 router (`f0/0`–`f6/0` + `f0/1`).
     - **Cisco Switch (`ios-sw`):** Up to 16-port managed L2/L3 switch via Dynamips **`NM-16ESW`** hardware EtherSwitch module (`fa1/0`–`fa1/15` on `c3725`/`c3745`/`c2691` images with hardware 802.1Q VLANs, Trunking, VTP, PVST+/STP, Port-Channel, and L3 SVIs) or **`PA-8E`** bridge groups (`e1/0`–`e2/7` on `c7200` images).
     - **MikroTik RouterOS (`routeros`) & MikroTik CRS Switch (`mikrotik-sw`):** Real RouterOS v6 x86 with 8 Ethernet ports (`ether1`–`ether8`), Bridge VLAN Filtering (`802.1Q` / `802.1ad` QinQ), STP/RSTP/MSTP, LACP (`802.3ad`), OSPF, BGP, VRRP, MPLS, and Firewall/NAT.
-    - **Open vSwitch / Linux Switch (`ovs-sw`) & x86 VM (`x86`):** 8-port 32-bit x86 VM (`eth0`–`eth7`) for running Linux with Open vSwitch (`ovs-vsctl`), `iproute2` VLAN-aware bridges, FRRouting, or custom appliances.
+    - **Open vSwitch / Linux Switch (`ovs-sw`) & x86 VM (`x86`):** 8-port 32-bit x86 VM (`eth0`–`eth7`) for running Linux with Open vSwitch (`ovs-vsctl`), `iproute2` VLAN-aware bridges, or custom appliances.
+    - **FRRouting (`frr`):** 8-port 32-bit Linux router (`eth0`–`eth7`) with a `vtysh` starter script for OSPF, IS-IS, BGP EVPN and BFD.
+    - **Firewall (`firewall`):** 8-port perimeter appliance (`wan0`, `dmz0`, `lan0`–`lan5`) with a stateful `nftables` forward-chain starter script.
 - **Multi-Ethernet Interface Support**
   - Configure multi-homed hosts, bastion servers, routers, switches, and emulated VMs directly from the Inspector (**`+ Add`** / **`- Remove`** interface buttons).
   - Supports up to **8 NICs** on End Hosts (`eth0`–`eth7`), Routers (`g0/0`–`g0/7`), Cisco 7200 (`f0/0`–`f6/0`, `f0/1`), MikroTik RouterOS & CRS Switch (`ether1`–`ether8`), Open vSwitch & x86 VMs (`eth0`–`eth7`), and up to **16 ports** on Ethernet Switches (`e0`–`e15`) and Cisco Switches (`fa1/0`–`fa1/15`).
@@ -30,8 +32,12 @@ No backend server, local agent, or cloud VM is required. Operating system images
 - **Realtime & Step-by-Step Simulation Modes**
   - **Realtime Mode:** Runs the switching/routing fabric at ~1 tick/ms so emulated OS guests experience LAN latency and responsive interactive consoles.
   - **Simulation Mode:** Packet Tracer–style visual packet animation across links with Play/Pause, single-tick stepping (`.`), and adjustable speed (`0.25×` to `4×`).
+- **Link quality**
+  - Select a cable and set delay, jitter, loss, MTU, and a speed badge (`10M`, `100M`, `1G`, `10G`, `WAN Serial`). `10M`, `100M` and WAN Serial also add serialization delay. The canvas labels a link when it is not a plain 1G cable.
+- **Startup scripts**
+  - Every node has a plain-text startup script in the inspector (IOS config, MikroTik `.rsc`, or a shell script). **Apply** pastes it into the console. Simulated nodes can apply it on start. IOS NVRAM (`write memory`) stays separate.
 - **Built-in Packet Capture & Wireshark Export**
-  - Attach a live sniffer to any link. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
+  - Attach a live sniffer to any link. Filter the live list (`stp`, `pvst`, `vlan == 10`, `arp`, `icmp`, `ospf`, `ip == 10.0.0.1`), with row colours for ARP, ICMP, TCP, UDP, DHCP, DNS, STP/PVST+, 802.1Q and routing protocols. Replay a captured frame or inject a crafted Ethernet/VLAN ARP or ICMP frame onto that link. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, DHCP, DNS, HTTP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
 - **Interactive Consoles**
   - **Simulated CLI:** Built-in VPCS shell for hosts and a Cisco-like CLI for switches and routers featuring Tab completion, command abbreviation (`sh ip int br`, `sh ip ro`, `sh run`), and contextual `?` help.
   - **Emulated Terminals:** Full `xterm.js` serial console and VGA screen tabs for Cisco IOS, RouterOS, Open vSwitch, and x86 VMs.
@@ -79,6 +85,8 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
 | **MikroTik RouterOS** | Emulated Router | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1`–`ether4` → up to `ether8` (8 NICs) |
 | **MikroTik CRS Switch** | Emulated Managed Switch | v86 (32-bit x86) | RouterOS **v6** x86 `.iso` or raw `.img` | `ether1`–`ether8` (8 switchports) |
 | **Open vSwitch / Linux** | Emulated Managed Switch | v86 (32-bit x86) | 32-bit Linux `.iso` or raw `.img` (with OVS / `iproute2`) | `eth0`–`eth7` (8 switchports) |
+| **FRRouting** | Emulated Router | v86 (32-bit x86) | 32-bit Linux `.iso` or raw `.img` with FRR | `eth0`–`eth7` (8 NICs) |
+| **Firewall** | Emulated Security Gateway | v86 (32-bit x86) | 32-bit Linux `.iso` or raw `.img` with nftables or iptables | `wan0`, `dmz0`, `lan0`–`lan5` |
 | **x86 VM** | Emulated Host/Appliance | v86 (32-bit x86) | Any 32-bit x86 `.iso` or raw `.img` | `eth0`–`eth1` → up to `eth7` (8 NICs) |
 
 ### Emulated Image Notes
@@ -116,8 +124,16 @@ ip [if] <addr/len> [gw]     Configure IPv4 address on eth0 (or specified ethN) a
                             Examples:
                               ip 192.168.10.11/24 192.168.10.1
                               ip eth1 10.0.20.11/24
+ip dhcp [if]                DHCP Discover/Request on that link (UDP 67/68) and install the lease
+ip dns <ip>                 Resolver for nslookup (DHCP also sets this)
+clear ip dns                Forget the resolver
+nslookup <name>             Query the resolver
+curl <ip> [port]            HTTP GET (default port 80)
+nc [-u] <ip> <port>         TCP connect, or a UDP probe with -u
+server dhcp|dns|http on|off Toggle a daemon on this host (new Server nodes start with all three on)
+server dns a <name> <ip>    Publish an A record
 clear ip [if]               Remove the configured IPv4 address on eth0 (or specified ethN)
-show ip                     Display IPv4 addresses, gateway, and MAC addresses across all NICs
+show ip                     Display IPv4 addresses, gateway, DNS, DHCP state, and MAC addresses
 show arp | arp              Display the ARP table
 show route                  Display the routing table
 ping <ip> [-c <count>]      Send ICMP echo requests
@@ -141,6 +157,10 @@ no ip address <if>          Remove an interface's IPv4 address (Router)
 ip route <prefix/len> <next-hop> [if]
                             Add a static route (Router)
 no ip route <index>         Remove a static route by its index in `show ip route`
+ip nat inside|outside <if>  Source NAT. Inside hosts are masqueraded as the outside address.
+                            With an outside port and no explicit inside, every other port is inside.
+show ip nat                 NAT role of each interface
+no ip nat <if>              Clear a NAT role
 ping <ip> [-c <count>]      Send ICMP echo requests from the device
 hostname <name>             Rename the device
 reload                      Clear learned ARP and MAC tables
@@ -179,9 +199,10 @@ netlab/
 ├── core/                  # Pure-Rust network simulation engine (netlab-core)
 │   ├── src/
 │   │   ├── device.rs      # Host, Switch, Router, and Ext (emulated bridge) state
-│   │   ├── eth.rs         # Real Ethernet II / ARP / IPv4 / ICMP wire frame codec
+│   │   ├── eth.rs         # Real Ethernet II / ARP / IPv4 / ICMP / TCP / UDP wire codec
+│   │   ├── services.rs    # DHCP, DNS, HTTP, TCP/UDP probes, source NAT
 │   │   ├── frame.rs       # Internal simulation frame representations
-│   │   ├── link.rs        # Point-to-point links, latency ticks, in-flight packets
+│   │   ├── link.rs        # Point-to-point links, delay, jitter, loss, MTU, speed
 │   │   ├── topology.rs    # Tick-driven L2 learning, L3 longest-prefix match, captures
 │   │   └── events.rs      # Structured simulation events for UI inspection
 │   └── tests/             # Integration tests (ping, L2/L3 forwarding, wire codec)

@@ -4,7 +4,8 @@
 import { TICK_MS } from './capture.js';
 
 const WORDS = ['show', 'interface', 'brief', 'route', 'arp', 'address', 'address-table', 'mac',
-  'hostname', 'ping', 'clear', 'help', 'history', 'running-config', 'gateway'];
+  'hostname', 'ping', 'clear', 'help', 'history', 'running-config', 'gateway',
+  'dhcp', 'dns', 'nat', 'inside', 'outside', 'server', 'nslookup', 'curl'];
 
 function expand(tok) {
   if (WORDS.includes(tok)) return tok;
@@ -48,8 +49,17 @@ const HOST_TREE = {
     '<addr/len>': ARG('Address on eth0, e.g. 10.0.0.5/24', { '<gateway>': ARG('Default gateway') }),
     '<if>': ARG('Interface, e.g. eth1', { '<addr/len>': ARG('Address, e.g. 10.0.1.5/24', { '<gateway>': ARG('Default gateway') }, false) }, false),
     address: ARG('Set an interface address', { '<if>': ARG('Interface', { '<addr/len>': ARG('Address, e.g. 10.0.1.5/24') }, false) }, false),
-    dhcp: ARG('Get an address via DHCP (not modelled)'),
+    dhcp: ARG('Lease an address on this link', { '<if>': ARG('Interface (default eth0)') }),
+    dns: ARG('DNS server used by nslookup', { '<ip>': ARG('Resolver address') }, false),
   }),
+  nslookup: ARG('Resolve a name', { '<name>': ARG('Hostname, e.g. lab.local') }, false),
+  curl: ARG('HTTP GET', { '<ip>': ARG('Server address', { '<port>': ARG('TCP port (default 80)') }) }, false),
+  nc: ARG('Probe a TCP or UDP port', { '-u': ARG('UDP instead of TCP', { '<ip>': ARG('Destination', { '<port>': ARG('Port') }, false) }, false), '<ip>': ARG('Destination', { '<port>': ARG('Port') }, false) }, false),
+  server: ARG('Built-in daemons', {
+    dhcp: ARG('DHCP server', { on: ARG('Enable'), off: ARG('Disable') }),
+    dns: ARG('DNS server', { on: ARG('Enable'), off: ARG('Disable'), a: ARG('Add an A record', { '<name>': ARG('Name', { '<ip>': ARG('Address') }, false) }, false) }),
+    http: ARG('HTTP server on port 80', { on: ARG('Enable'), off: ARG('Disable') }),
+  }, false),
   show: ARG('Show information', {
     ip: ARG('Addresses, gateway, MACs', { interface: ARG('Interface table', { brief: ARG('Brief summary') }) }),
     interface: ARG('Interface summary'),
@@ -67,6 +77,7 @@ const ROUTER_TREE = (isSwitch) => ({
       interface: ARG('Interface status', { brief: ARG('Brief summary') }),
       route: ARG('Routing table'),
       arp: ARG('ARP cache'),
+      nat: ARG('NAT roles'),
     }, false),
     interface: ARG('Interface status'),
     arp: ARG('ARP cache'),
@@ -76,11 +87,16 @@ const ROUTER_TREE = (isSwitch) => ({
   ip: ARG('Configure IP', {
     address: ARG('Set an interface address', { '<if>': ARG('Interface', { '<addr/len>': ARG('Address, e.g. 10.1.1.1/24') }, false) }, false),
     route: ARG('Add a static route', { '<prefix/len>': ARG('Destination, e.g. 0.0.0.0/0', { '<next-hop>': ARG('Next-hop address', { '<if>': ARG('Exit interface') }) }, false) }, false),
+    nat: ARG('Source NAT role', {
+      inside: ARG('Inside (hosts to hide)', { '<if>': ARG('Interface') }, false),
+      outside: ARG('Outside (masquerade address)', { '<if>': ARG('Interface') }, false),
+    }, false),
   }, false),
   no: ARG('Negate a command', {
     ip: ARG('IP', {
       address: ARG('Remove an interface address', { '<if>': ARG('Interface') }, false),
       route: ARG('Remove a static route', { '<n>': ARG('Route number from "show ip route"') }, false),
+      nat: ARG('Clear a NAT role', { '<if>': ARG('Interface') }, false),
     }, false),
   }, false),
   ...COMMON,
@@ -154,7 +170,25 @@ export class SimShell {
       if (c0 === 'show' && (c1 === 'interface' || (c1 === 'ip' && c2 === 'interface'))) return this.showIntBrief();
       if (c0 === 'show' && (!c1 || c1 === 'ip')) return this.showHostIp();
       if (c0 === 'ip' && !c1) return this.showHostIp();
-      if (c0 === 'ip' && c1 === 'dhcp') throw new Error('DHCP is not modelled yet — set a static address: ip 10.0.0.5/24 10.0.0.1');
+      if (c0 === 'ip' && c1 === 'dhcp') {
+        const port = c2 ? this.port(c2) : 0;
+        if (!d.powered) throw new Error('node is stopped — start it first');
+        if (!this.app.lab.dhcp_client(this.id, port)) throw new Error('DHCP could not start on this interface');
+        return this.write(`DHCP discover on ${this.app.ifName(this.id, port)}\n`, 'dim');
+      }
+      if (c0 === 'ip' && c1 === 'dns') {
+        if (!c2) return this.write(`DNS server : ${d.resolver || 'none'}\n`);
+        if (!isIp(c2) || !this.app.lab.set_dns(this.id, c2)) throw new Error('usage: ip dns <ip>');
+        return this.write(`DNS server ${c2}\n`);
+      }
+      if (c0 === 'clear' && c1 === 'ip' && c2 === 'dns') {
+        this.app.lab.set_dns(this.id, '');
+        return this.write('DNS server cleared\n');
+      }
+      if (c0 === 'nslookup') return this.lookup(t[1]);
+      if (c0 === 'curl') return this.curl(t.slice(1));
+      if (c0 === 'nc') return this.nc(t.slice(1));
+      if (c0 === 'server') return this.server(t.slice(1));
       if (c0 === 'ip') {
         let port = 0, rest = t.slice(1);
         if (c1 === 'address') {
@@ -190,6 +224,7 @@ export class SimShell {
       if (c1 === 'interface') return this.showIntBrief();
       if (c1 === 'ip' && c2 === 'route') return this.showRoute();
       if (c1 === 'arp' || (c1 === 'ip' && c2 === 'arp')) return this.showArp();
+      if (c1 === 'ip' && c2 === 'nat') return this.showNat();
       if (c1 === 'mac') return this.showMac();
       if (c1 === 'running-config') return this.showRun();
       throw new Error('show what? interface | ip route | arp | mac address-table | running-config');
@@ -204,6 +239,18 @@ export class SimShell {
     if (c0 === 'no' && c1 === 'ip' && c2 === 'address') {
       this.app.lab.clear_ip(this.id, this.port(t[3]));
       return;
+    }
+    if (c0 === 'ip' && c1 === 'nat') {
+      const role = c2;
+      if (role !== 'inside' && role !== 'outside') throw new Error('usage: ip nat inside|outside <if>');
+      const port = this.port(t[3]);
+      if (!this.app.lab.set_nat(this.id, port, role)) throw new Error('NAT role was not set');
+      return this.write(`${this.app.ifName(this.id, port)} is NAT ${role}\n`);
+    }
+    if (c0 === 'no' && c1 === 'ip' && c2 === 'nat') {
+      const port = this.port(t[3]);
+      this.app.lab.set_nat(this.id, port, 'off');
+      return this.write(`${this.app.ifName(this.id, port)} NAT cleared\n`);
     }
     if (c0 === 'ip' && c1 === 'route') {
       const a = parseAddr(t.slice(2));
@@ -312,6 +359,13 @@ export class SimShell {
   help() {
     const rows = this.isHost ? [
       ['ip [if] <addr>/<len> [gw]', 'set address (on eth0 or <if>) and gateway'],
+      ['ip dhcp [if]', 'lease an address from a DHCP server on this link'],
+      ['ip dns <ip>', 'set the resolver used by nslookup'],
+      ['nslookup <name>', 'DNS query'],
+      ['curl <ip> [port]', 'HTTP GET (default port 80)'],
+      ['nc [-u] <ip> <port>', 'TCP connect, or UDP probe with -u'],
+      ['server dhcp|dns|http on|off', 'toggle a built-in daemon'],
+      ['server dns a <name> <ip>', 'publish an A record'],
       ['show ip | show interface', 'show addresses, gateway, MACs'],
       ['clear ip [if]', 'remove address on eth0 or <if>'],
       ['ping <ip> [-c n]', 'send ICMP echo requests'],
@@ -328,6 +382,9 @@ export class SimShell {
       ['no ip address <if>', ''],
       ['ip route <net>/<len> <nh> [if]', 'add static route (0.0.0.0/0 = default)'],
       ['no ip route <n>', 'remove route n'],
+      ['ip nat inside|outside <if>', 'source NAT (masquerade on outside)'],
+      ['show ip nat', 'NAT role of each interface'],
+      ['no ip nat <if>', 'clear a NAT role'],
       ['ping <ip> [-c n]', ''],
       ['hostname <name> | clear | reload', ''],
     ];
@@ -349,11 +406,13 @@ export class SimShell {
         `IP/MASK     : ${p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0'}`,
         `GATEWAY     : ${gw ?? '0.0.0.0'}`,
         `MAC         : ${p.mac}`,
+        `DNS         : ${d.resolver || '0.0.0.0'}`,
+        `DHCP        : ${d.dhcp || 'off'}`,
         `LINK        : ${this.linkState(0)}`,
       ].join('\n') + '\n');
       return;
     }
-    const rows = [`NAME        : ${d.name}`, `GATEWAY     : ${gw ?? '0.0.0.0'}`];
+    const rows = [`NAME        : ${d.name}`, `GATEWAY     : ${gw ?? '0.0.0.0'}`, `DNS         : ${d.resolver || '0.0.0.0'}`, `DHCP        : ${d.dhcp || 'off'}`];
     ps.forEach((p, i) => {
       rows.push(`${pad(this.app.ifName(this.id, i).toUpperCase(), 12)}: ${pad(p.ip ? `${p.ip}/${maskToLen(p.mask)}` : '0.0.0.0/0', 18)} ${p.mac}  (${this.linkState(i)})`);
     });
@@ -411,12 +470,62 @@ export class SimShell {
     ps.forEach((p, i) => {
       out.push(`interface ${this.app.ifName(this.id, i)}`);
       out.push(p.ip ? ` ip address ${p.ip} ${p.mask}` : ' no ip address');
+      if (p.nat) out.push(` ip nat ${p.nat}`);
       if (p.link == null) out.push(' shutdown');
       out.push('!');
     });
     d.routes.forEach(r => out.push(`ip route ${r.prefix} ${r.mask} ${r.next_hop}`));
     out.push('end');
     this.write(out.join('\n') + '\n');
+  }
+
+  showNat() {
+    const rows = this.ports().map((p, i) => `${pad(this.app.ifName(this.id, i), 12)}${p.nat || 'off'}`);
+    this.write((rows.length ? rows.join('\n') : '(no interfaces)') + '\n');
+  }
+
+  lookup(name) {
+    if (!name) throw new Error('usage: nslookup <name>');
+    if (!this.dev.powered) throw new Error('node is stopped — start it first');
+    if (!this.app.lab.dns_query(this.id, name)) throw new Error('no address or DNS server — ip dhcp, or ip <addr> and ip dns <ip>');
+    this.write(`Server: ${this.dev.resolver || '?'}\nName: ${name}\n`, 'dim');
+  }
+
+  curl(args) {
+    let host = args[0], port = 80;
+    if (!host) throw new Error('usage: curl <ip> [port]');
+    if (host.includes(':')) { const [h, p] = host.split(':'); host = h; port = +p || 80; }
+    else if (args[1] && /^\d+$/.test(args[1])) port = +args[1];
+    if (!isIp(host)) throw new Error('usage: curl <ip> [port]');
+    if (!this.dev.powered) throw new Error('node is stopped — start it first');
+    if (!this.app.lab.http_get(this.id, host, port)) throw new Error('could not send the GET');
+    this.write(`GET / HTTP/1.0  →  ${host}:${port}\n`, 'dim');
+  }
+
+  nc(args) {
+    let i = 0, udp = false;
+    if (args[0] === '-u') { udp = true; i = 1; }
+    const host = args[i], port = +args[i + 1];
+    if (!isIp(host ?? '') || !(port > 0 && port < 65536)) throw new Error('usage: nc [-u] <ip> <port> [payload]');
+    if (!this.dev.powered) throw new Error('node is stopped — start it first');
+    const ok = udp
+      ? this.app.lab.probe_udp(this.id, host, port, args.slice(i + 2).join(' '))
+      : this.app.lab.probe_tcp(this.id, host, port);
+    if (!ok) throw new Error('could not send the probe');
+    this.write(`${udp ? 'UDP' : 'TCP'} ${host}:${port}\n`, 'dim');
+  }
+
+  server(args) {
+    const [what, a, name, ip] = args;
+    const d = this.dev;
+    if (what === 'dns' && a === 'a') {
+      if (!name || !isIp(ip ?? '') || !this.app.lab.add_dns_record(this.id, name, ip)) throw new Error('usage: server dns a <name> <ip>');
+      return this.write(`A ${name} → ${ip}\n`);
+    }
+    if (!['dhcp', 'dns', 'http'].includes(what)) throw new Error('usage: server dhcp|dns|http on|off');
+    const on = a !== 'off';
+    this.app.lab.set_services(this.id, what === 'dhcp' ? on : !!d.svc_dhcp, what === 'dns' ? on : !!d.svc_dns, what === 'http' ? on : !!d.svc_http);
+    this.write(`${what} server ${on ? 'on' : 'off'}\n`);
   }
 
   ping(args) {
@@ -455,7 +564,14 @@ export class SimShell {
 
   /** called with every sim event */
   onEvent(ev) {
-    if (!this.pingJob || ev.device !== this.id) return;
+    if (ev.device !== this.id) return;
+    if (ev.kind === 'dhcp' || ev.kind === 'dns' || ev.kind === 'tcp' || ev.kind === 'http' || ev.kind === 'udp') {
+      const msg = ev.msg.replace(/^[^:]+:\s*/, '');
+      const bad = /fail|timeout|closed|NXDOMAIN|unreachable/i.test(msg);
+      this.write(msg + '\n', bad ? 'err' : 'ok');
+      return;
+    }
+    if (!this.pingJob) return;
     if (ev.kind === 'deliver') {
       const m = ev.msg.match(/reply from ([\d.]+) ttl=(\d+)/);
       const p = this.pings.shift();

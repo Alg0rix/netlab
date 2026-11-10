@@ -139,6 +139,55 @@ impl NetLab {
         out
     }
 
+    /// Link impairment. `delay` and `jitter` are ticks (1 ms in Realtime).
+    /// `loss` is a percent. `mtu` 0 means no limit.
+    /// `speed` is "10M" | "100M" | "1G" | "10G" | "WAN".
+    pub fn set_link_impair(&mut self, id: u32, delay: u32, jitter: u32, loss: u8, mtu: u16, speed: &str) -> bool {
+        self.topo.set_link_impair(id, delay, jitter, loss, mtu, speed)
+    }
+
+    /// Place a raw Ethernet frame onto a link, travelling away from `from`.
+    pub fn inject_link(&mut self, link: u32, from: u32, bytes: &[u8]) -> bool {
+        self.topo.inject_link(link, from, bytes)
+    }
+
+    pub fn set_services(&mut self, dev: u32, dhcp: bool, dns: bool, http: bool) {
+        self.topo.set_services(dev, dhcp, dns, http);
+    }
+
+    pub fn set_dns(&mut self, dev: u32, ip: &str) -> bool {
+        self.topo.set_dns(dev, ip)
+    }
+
+    pub fn add_dns_record(&mut self, dev: u32, name: &str, ip: &str) -> bool {
+        self.topo.add_dns_record(dev, name, ip)
+    }
+
+    pub fn dhcp_client(&mut self, dev: u32, port: usize) -> bool {
+        self.topo.dhcp_client(dev, port)
+    }
+
+    pub fn dns_query(&mut self, dev: u32, name: &str) -> bool {
+        self.topo.dns_query(dev, name)
+    }
+
+    pub fn probe_tcp(&mut self, dev: u32, dst: &str, port: u16) -> bool {
+        self.topo.probe_tcp(dev, dst, port)
+    }
+
+    pub fn probe_udp(&mut self, dev: u32, dst: &str, port: u16, payload: &str) -> bool {
+        self.topo.probe_udp(dev, dst, port, payload)
+    }
+
+    pub fn http_get(&mut self, dev: u32, dst: &str, port: u16) -> bool {
+        self.topo.http_get(dev, dst, port)
+    }
+
+    /// role: "inside" | "outside" | "off"
+    pub fn set_nat(&mut self, dev: u32, port: usize, role: &str) -> bool {
+        self.topo.set_nat(dev, port, role)
+    }
+
     /// JSON snapshot of the whole topology for rendering.
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.topo.snapshot()).unwrap_or_else(|_| "{}".into())

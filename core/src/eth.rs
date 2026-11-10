@@ -16,7 +16,7 @@ fn mac_of(b: &[u8]) -> u64 {
     b.iter().take(6).fold(0u64, |m, &x| (m << 8) | x as u64)
 }
 
-fn mac_bytes(m: u64) -> [u8; 6] {
+pub(crate) fn mac_bytes(m: u64) -> [u8; 6] {
     [
         (m >> 40) as u8,
         (m >> 32) as u8,
@@ -28,7 +28,7 @@ fn mac_bytes(m: u64) -> [u8; 6] {
 }
 
 /// Internet checksum (16-bit ones' complement).
-fn cksum(data: &[u8]) -> u16 {
+pub(crate) fn cksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
     while i + 1 < data.len() {
@@ -247,3 +247,277 @@ pub fn raw_label(raw: &[u8]) -> String {
 }
 
 pub const _: () = assert!(BROADCAST_MAC == 0xFF_FF_FF_FF_FF_FF);
+
+/// Where the IPv4 header starts, skipping one 802.1Q / 802.1ad tag.
+pub(crate) fn ipv4_off(frame: &[u8]) -> Option<usize> {
+    if frame.len() < 34 {
+        return None;
+    }
+    let et = u16be(frame, 12);
+    if et == 0x0800 && frame[14] >> 4 == 4 {
+        return Some(14);
+    }
+    if (et == 0x8100 || et == 0x88a8) && frame.len() >= 38 && u16be(frame, 16) == 0x0800 && frame[18] >> 4 == 4 {
+        return Some(18);
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct IpView {
+    pub off: usize,
+    pub ihl: usize,
+    pub proto: u8,
+    pub sport: u16,
+    pub dport: u16,
+    pub icmp_type: u8,
+    pub icmp_id: u16,
+    pub payload: usize,
+}
+
+pub(crate) fn view_ip(frame: &[u8]) -> Option<IpView> {
+    let off = ipv4_off(frame)?;
+    let ihl = ((frame[off] & 0x0f) as usize) * 4;
+    if ihl < 20 || frame.len() < off + ihl {
+        return None;
+    }
+    let proto = frame[off + 9];
+    let l4 = off + ihl;
+    let mut sport = 0u16;
+    let mut dport = 0u16;
+    let mut icmp_type = 0u8;
+    let mut icmp_id = 0u16;
+    let mut payload = l4;
+    if (proto == 6 || proto == 17) && frame.len() >= l4 + 4 {
+        sport = u16be(frame, l4);
+        dport = u16be(frame, l4 + 2);
+        payload = l4 + if proto == 17 { 8 } else { 20.min(frame.len() - l4) };
+    } else if proto == 1 && frame.len() >= l4 + 8 {
+        icmp_type = frame[l4];
+        icmp_id = u16be(frame, l4 + 4);
+        payload = l4 + 8;
+    }
+    Some(IpView {
+        off,
+        ihl,
+        proto,
+        sport,
+        dport,
+        icmp_type,
+        icmp_id,
+        payload,
+    })
+}
+
+fn pseudo_sum(src: [u8; 4], dst: [u8; 4], proto: u8, len: usize) -> u32 {
+    let mut s = 0u32;
+    s += ((src[0] as u32) << 8) | src[1] as u32;
+    s += ((src[2] as u32) << 8) | src[3] as u32;
+    s += ((dst[0] as u32) << 8) | dst[1] as u32;
+    s += ((dst[2] as u32) << 8) | dst[3] as u32;
+    s += proto as u32;
+    s + len as u32
+}
+
+fn udp_sum(c: u16) -> u16 {
+    if c == 0 { 0xffff } else { c }
+}
+
+fn finish(mut sum: u32) -> u16 {
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn sum_words(data: &[u8]) -> u32 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        sum += ((data[i] as u32) << 8) | data[i + 1] as u32;
+        i += 2;
+    }
+    if i < data.len() {
+        sum += (data[i] as u32) << 8;
+    }
+    sum
+}
+
+/// Write addresses and TTL into an Ethernet/IPv4 frame and recompute checksums.
+/// Optional L4 port / ICMP id overrides are applied first.
+pub(crate) fn sync_ipv4(
+    frame: &mut [u8],
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    sport: Option<u16>,
+    dport: Option<u16>,
+    icmp_id: Option<u16>,
+) {
+    let Some(v) = view_ip(frame) else { return };
+    let off = v.off;
+    frame[off + 8] = ttl;
+    frame[off + 12..off + 16].copy_from_slice(&src);
+    frame[off + 16..off + 20].copy_from_slice(&dst);
+    frame[off + 10] = 0;
+    frame[off + 11] = 0;
+    let c = cksum(&frame[off..off + v.ihl]);
+    frame[off + 10] = (c >> 8) as u8;
+    frame[off + 11] = c as u8;
+
+    let l4 = off + v.ihl;
+    let total = u16be(frame, off + 2) as usize;
+    let seg_end = (off + total).min(frame.len()).max(l4);
+    if v.proto == 17 && frame.len() >= l4 + 8 {
+        if let Some(p) = sport {
+            frame[l4..l4 + 2].copy_from_slice(&p.to_be_bytes());
+        }
+        if let Some(p) = dport {
+            frame[l4 + 2..l4 + 4].copy_from_slice(&p.to_be_bytes());
+        }
+        let ulen = u16be(frame, l4 + 4) as usize;
+        let end = (l4 + ulen).min(frame.len());
+        frame[l4 + 6] = 0;
+        frame[l4 + 7] = 0;
+        let sum = pseudo_sum(src, dst, 17, end - l4) + sum_words(&frame[l4..end]);
+        let c = udp_sum(finish(sum));
+        frame[l4 + 6] = (c >> 8) as u8;
+        frame[l4 + 7] = c as u8;
+    } else if v.proto == 6 && frame.len() >= l4 + 20 {
+        if let Some(p) = sport {
+            frame[l4..l4 + 2].copy_from_slice(&p.to_be_bytes());
+        }
+        if let Some(p) = dport {
+            frame[l4 + 2..l4 + 4].copy_from_slice(&p.to_be_bytes());
+        }
+        if seg_end >= l4 + 18 {
+            frame[l4 + 16] = 0;
+            frame[l4 + 17] = 0;
+            let sum = pseudo_sum(src, dst, 6, seg_end - l4) + sum_words(&frame[l4..seg_end]);
+            let c = finish(sum);
+            frame[l4 + 16] = (c >> 8) as u8;
+            frame[l4 + 17] = c as u8;
+        }
+    } else if v.proto == 1 && frame.len() >= l4 + 8 {
+        if let Some(id) = icmp_id {
+            frame[l4 + 4..l4 + 6].copy_from_slice(&id.to_be_bytes());
+        }
+        frame[l4 + 2] = 0;
+        frame[l4 + 3] = 0;
+        let c = cksum(&frame[l4..seg_end]);
+        frame[l4 + 2] = (c >> 8) as u8;
+        frame[l4 + 3] = c as u8;
+    }
+}
+
+fn push_ipv4(out: &mut Vec<u8>, ttl: u8, proto: u8, id: u16, src: [u8; 4], dst: [u8; 4], payload_len: usize) {
+    let total = 20 + payload_len;
+    out.push(0x45);
+    out.push(0);
+    out.extend_from_slice(&(total as u16).to_be_bytes());
+    out.extend_from_slice(&id.to_be_bytes());
+    out.extend_from_slice(&0x4000u16.to_be_bytes());
+    out.push(ttl);
+    out.push(proto);
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&src);
+    out.extend_from_slice(&dst);
+    let start = out.len() - 20;
+    let c = cksum(&out[start..]);
+    out[start + 10] = (c >> 8) as u8;
+    out[start + 11] = c as u8;
+}
+
+pub(crate) fn build_udp(
+    src_mac: u64,
+    dst_mac: u64,
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    id: u16,
+    sport: u16,
+    dport: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(14 + 20 + 8 + payload.len());
+    out.extend_from_slice(&mac_bytes(dst_mac));
+    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&0x0800u16.to_be_bytes());
+    push_ipv4(&mut out, ttl, 17, id, src, dst, 8 + payload.len());
+    out.extend_from_slice(&sport.to_be_bytes());
+    out.extend_from_slice(&dport.to_be_bytes());
+    out.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(payload);
+    let l4 = 14 + 20;
+    let sum = pseudo_sum(src, dst, 17, 8 + payload.len()) + sum_words(&out[l4..]);
+    let c = udp_sum(finish(sum));
+    out[l4 + 6] = (c >> 8) as u8;
+    out[l4 + 7] = c as u8;
+    out
+}
+
+pub(crate) fn build_tcp(
+    src_mac: u64,
+    dst_mac: u64,
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    id: u16,
+    sport: u16,
+    dport: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(14 + 20 + 20 + payload.len());
+    out.extend_from_slice(&mac_bytes(dst_mac));
+    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&0x0800u16.to_be_bytes());
+    push_ipv4(&mut out, ttl, 6, id, src, dst, 20 + payload.len());
+    out.extend_from_slice(&sport.to_be_bytes());
+    out.extend_from_slice(&dport.to_be_bytes());
+    out.extend_from_slice(&seq.to_be_bytes());
+    out.extend_from_slice(&ack.to_be_bytes());
+    out.push(0x50); // data offset 5
+    out.push(flags);
+    out.extend_from_slice(&65535u16.to_be_bytes());
+    out.extend_from_slice(&[0, 0]); // checksum
+    out.extend_from_slice(&0u16.to_be_bytes()); // urgent
+    out.extend_from_slice(payload);
+    let l4 = 34;
+    let sum = pseudo_sum(src, dst, 6, 20 + payload.len()) + sum_words(&out[l4..]);
+    let c = finish(sum);
+    out[l4 + 16] = (c >> 8) as u8;
+    out[l4 + 17] = c as u8;
+    out
+}
+
+/// Canvas colour for a raw Ethernet frame.
+pub fn l4_color(raw: &[u8]) -> &'static str {
+    if let Some(v) = view_ip(raw) {
+        if v.proto == 17 && (v.sport == 67 || v.dport == 67 || v.sport == 68 || v.dport == 68) {
+            return "dhcp";
+        }
+        if v.proto == 17 && (v.sport == 53 || v.dport == 53) {
+            return "dns";
+        }
+        return match v.proto {
+            1 => "icmp",
+            6 => "tcp",
+            17 => "udp",
+            89 => "ospf",
+            _ => "raw",
+        };
+    }
+    if raw.len() >= 14 {
+        match u16be(raw, 12) {
+            0x0806 => return "arp",
+            0x8100 | 0x88a8 => return "vlan",
+            t if t <= 1500 => return "stp",
+            _ => {}
+        }
+    }
+    "raw"
+}

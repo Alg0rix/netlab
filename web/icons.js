@@ -53,6 +53,17 @@ const SVG = {
   'ios-sw': swBox('isw', '#3fd3c4', '#119f94', '#0a5e58', '#119f94', '#074540', '#042e2b', '#8effd4', 'IOS'),
   'mikrotik-sw': swBox('msw', '#b495ff', '#7a55e0', '#45308a', '#6d48d1', '#322069', '#22144a', '#7ff0a8', 'CRS'),
   'ovs-sw': swBox('osw', '#ffb86b', '#e07a2e', '#8f4610', '#c96820', '#6e3409', '#3d1c04', '#7ff0a8', 'OVS'),
+  frr: cyl('fr', '#7dffb3', '#1fa86a', '#0d6b40', routerArrows + `
+    <text x="32" y="46" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".9">FRR</text>`),
+  firewall: `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs><linearGradient id="fwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8b8b"/><stop offset="1" stop-color="#d23b3b"/></linearGradient></defs>
+  <rect x="14" y="8" width="36" height="44" rx="4" fill="url(#fwg)"/>
+  <path d="M32 16l12 5v8c0 7-5 12-12 15-7-3-12-8-12-15v-8z" fill="#fff" fill-opacity=".92"/>
+  <path d="M32 22v14" stroke="#d23b3b" stroke-width="2"/>
+  <path d="M26 29h12" stroke="#d23b3b" stroke-width="2"/>
+  <text x="32" y="58" text-anchor="middle" font-family="system-ui,sans-serif" font-size="7" font-weight="700" fill="#ffb4b4">FW</text>
+</svg>`,
   x86: `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs><linearGradient id="vmg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb86b"/><stop offset="1" stop-color="#e07a2e"/></linearGradient></defs>
@@ -119,6 +130,8 @@ export const TEMPLATES = [
   { id: 'routeros', kind: 'ext', emu: 'v86', label: 'MikroTik RouterOS', sub: 'RouterOS v6 x86 · 4× Ethernet', group: 'Emulated', prefix: 'MT', ports: 4, maxPorts: 8 },
   { id: 'mikrotik-sw', kind: 'ext', emu: 'v86', label: 'MikroTik CRS Switch', sub: 'RouterOS bridge/VLAN · 8 ports', group: 'Emulated', prefix: 'CRS', ports: 8, maxPorts: 8 },
   { id: 'ovs-sw', kind: 'ext', emu: 'v86', label: 'Open vSwitch / Linux', sub: 'x86 L2/VLAN switch · 8 ports', group: 'Emulated', prefix: 'OVS', ports: 8, maxPorts: 8 },
+  { id: 'frr', kind: 'ext', emu: 'v86', label: 'FRRouting', sub: 'Linux router · eth0–eth7 · vtysh', group: 'Emulated', prefix: 'FRR', ports: 8, maxPorts: 8 },
+  { id: 'firewall', kind: 'ext', emu: 'v86', label: 'Firewall', sub: 'wan0 · dmz0 · lan0–lan5', group: 'Emulated', prefix: 'FW', ports: 8, maxPorts: 8 },
   { id: 'x86', kind: 'ext', emu: 'v86', label: 'x86 VM', sub: '32-bit x86 ISO/disk · multi-NIC', group: 'Emulated', prefix: 'VM', ports: 4, maxPorts: 8 },
 ];
 export const tpl = id => TEMPLATES.find(t => t.id === id);
@@ -150,7 +163,9 @@ export function ifName(template, i) {
     case 'ios-sw': return `fa1/${i}`;
     case 'routeros':
     case 'mikrotik-sw': return `ether${i + 1}`;
-    case 'ovs-sw': return `eth${i}`;
+    case 'ovs-sw':
+    case 'frr': return `eth${i}`;
+    case 'firewall': return ['wan0', 'dmz0', 'lan0', 'lan1', 'lan2', 'lan3', 'lan4', 'lan5'][i] ?? `lan${i}`;
     default: return `eth${i}`;
   }
 }

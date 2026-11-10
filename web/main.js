@@ -2,7 +2,7 @@ import init, { NetLab } from './pkg/netlab_wasm.js';
 import { IOSNode, iosArgs, detectIosPlatform } from './ios.js';
 import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
-import { dissect, hexRows, toPcap, TICK_MS } from './capture.js';
+import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame } from './capture.js';
 import { SimShell } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile } from './store.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
@@ -71,7 +71,7 @@ const P = {
 
 const events = [];           // { n, tick, device, link, kind, msg, cat, node, via }
 let evSeq = 0;
-const evFilter = { cats: new Set(['ARP', 'ICMP', 'L2', 'EXT', 'SYS']), dropsOnly: false, q: '' };
+const evFilter = { cats: new Set(['ARP', 'ICMP', 'L2', 'L4', 'EXT', 'SYS']), dropsOnly: false, q: '' };
 let evSelected = null;
 
 const caps = new Map();      // linkId -> { name, packets: [], paused }
@@ -165,10 +165,24 @@ function serialize() {
       powered: d.powered, image: meta.get(d.id)?.image ?? null, uid: meta.get(d.id)?.uid,
       portCount: portCount(d.id),
       ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic, nics: portCount(d.id) } } : {}),
-      ports: d.ports.slice(0, portCount(d.id)).map(p => (p.ip ? { ip: p.ip, mask: p.mask } : null)),
+      ports: d.ports.slice(0, portCount(d.id)).map(p => {
+        if (!p.ip && !p.nat) return null;
+        const o = {};
+        if (p.ip) { o.ip = p.ip; o.mask = p.mask; }
+        if (p.nat) o.nat = p.nat;
+        return o;
+      }),
       routes: d.routes,
+      startup: meta.get(d.id)?.startup || '',
+      startupBoot: !!meta.get(d.id)?.startupBoot,
+      svc: { dhcp: !!d.svc_dhcp, dns: !!d.svc_dns, http: !!d.svc_http },
+      resolver: d.resolver || '',
+      dns: d.dns_records || [],
     })),
-    links: snap.links.map(l => ({ a: l.a, ap: l.a_port, b: l.b, bp: l.b_port, up: l.up })),
+    links: snap.links.map(l => ({
+      a: l.a, ap: l.a_port, b: l.b, bp: l.b_port, up: l.up,
+      delay: l.delay, jitter: l.jitter, loss: l.loss, mtu: l.mtu, speed: l.speed,
+    })),
     notes: notes.map(({ _b, ...n }) => n),
     shapes: shapes.map(sh => ({ ...sh })),
   };
@@ -197,7 +211,17 @@ function restore(data) {
     idmap.set(n.id, id);
     const savedPorts = n.portCount ?? n.vm?.nics ?? (n.ports?.length ? Math.max(t.ports, n.ports.length) : t.ports);
     registerNode(id, t.id, n.name, n.image, n.uid, n.vm, savedPorts);
-    (n.ports ?? []).forEach((p, i) => p && lab.set_ip(id, i, p.ip, p.mask));
+    const m = meta.get(id);
+    if (n.startup) m.startup = n.startup;
+    if (n.startupBoot) m.startupBoot = true;
+    (n.ports ?? []).forEach((p, i) => {
+      if (!p) return;
+      if (p.ip) lab.set_ip(id, i, p.ip, p.mask);
+      if (p.nat) lab.set_nat(id, i, p.nat);
+    });
+    if (n.svc) lab.set_services(id, !!n.svc.dhcp, !!n.svc.dns, !!n.svc.http);
+    for (const rec of n.dns ?? []) if (rec?.[0] && rec?.[1]) lab.add_dns_record(id, rec[0], rec[1]);
+    if (n.resolver) lab.set_dns(id, n.resolver);
     for (const r of n.routes ?? []) lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
   }
@@ -206,6 +230,9 @@ function restore(data) {
     if (a == null || b == null) continue;
     const id = lab.add_link_ports(a, l.ap, b, l.bp);
     if (id >= 0 && l.up === false) lab.set_link_up(id, false);
+    if (id >= 0 && (l.delay != null || l.jitter || l.loss || l.mtu || (l.speed && l.speed !== '1G'))) {
+      lab.set_link_impair(id, l.delay ?? 4, l.jitter ?? 0, l.loss ?? 0, l.mtu ?? 0, l.speed || '1G');
+    }
   }
   notes = (data?.notes ?? []).map(n => ({ ...n }));
   nextNoteId = notes.reduce((m, n) => Math.max(m, n.id), 0) + 1;
@@ -288,12 +315,24 @@ function registerNode(id, tplId, name, image = null, uid = null, vm = null, port
   }
 }
 
+const STARTUP = {
+  ios: '!\n! Paste into the IOS console with Apply.\n!\nhostname Router\n',
+  'ios-sw': '!\nvlan database\nvlan 10\nexit\n',
+  routeros: '/system identity set name=MT\n',
+  'mikrotik-sw': '/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp\n',
+  'ovs-sw': 'ip link add br0 type bridge vlan_filtering 1\nip link set br0 up\n',
+  frr: '# eth0–eth7. Paste at the Linux shell.\nip link set eth0 up\nvtysh -c \'conf t\' -c \'router ospf\' -c \'network 10.0.0.0/8 area 0\'\n',
+  firewall: '# wan0 outside, dmz0, lan0–lan5 inside\nnft add table inet filter\nnft add chain inet filter forward \'{ type filter hook forward priority 0 ; policy drop ; }\'\nnft add rule inet filter forward ct state established,related accept\nnft add rule inet filter forward iifname "lan*" accept\n',
+};
+
 function addNode(tplId, x, y) {
   const t = tpl(tplId);
   if (!t || t.disabled) return null;
   const name = nextName(t.prefix);
   const id = lab.add_device(t.kind, name, snapV(x), snapV(y));
   registerNode(id, t.id, name);
+  if (STARTUP[t.id]) meta.get(id).startup = STARTUP[t.id];
+  if (t.id === 'server') lab.set_services(id, true, true, true);
   refresh();
   selectOnly('node', id);
   dirty();
@@ -343,7 +382,12 @@ function duplicateSelection() {
 async function startNode(id) {
   const d = byId.get(id);
   if (!d) return;
-  if (d.kind !== 'ext') { lab.set_power(id, true); refresh(); renderAll(); dirty(); return; }
+  if (d.kind !== 'ext') {
+    lab.set_power(id, true);
+    refresh(); renderAll(); dirty();
+    if (meta.get(id)?.startupBoot) applyStartup(id, true);
+    return;
+  }
   if (isVM(id)) return startVM(id);
   const node = emus.get(id);
   if (!crossOriginIsolated) return toast('IOS needs cross-origin isolation (serve with COOP/COEP — make serve)', 'err');
@@ -413,6 +457,27 @@ function reloadNode(id) {
   lab.set_power(id, false); lab.set_power(id, true);
   refresh(); renderAll();
   toast(`${d.name} reloaded — ARP/MAC tables cleared`);
+  if (meta.get(id)?.startupBoot) applyStartup(id, true);
+}
+
+function applyStartup(id, quiet) {
+  const m = meta.get(id);
+  const d = byId.get(id);
+  const text = (m?.startup ?? '').replace(/\r/g, '');
+  if (!d || !text.trim()) { if (!quiet) toast('Startup script is empty', 'err'); return; }
+  if (d.kind === 'ext') {
+    const emu = emus.get(id);
+    if (!emu || nodeState(id) !== 'running') return toast(`${d.name}: start it, wait for a prompt, then paste`, 'err');
+    emu.sendKeys(new TextEncoder().encode(text.replace(/\n/g, '\r') + '\r'));
+    toast(`${d.name}: pasted the startup script`);
+    return;
+  }
+  if (nodeState(id) !== 'running') return toast(`${d.name}: start it before applying the script`, 'err');
+  if (!consoles.has(id)) consoles.set(id, simConsole(id));
+  const lines = text.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('!') && !s.startsWith('#'));
+  for (const line of lines) consoles.get(id).shell.run(line);
+  if (!quiet) toast(`${d.name}: applied ${lines.length} command${lines.length === 1 ? '' : 's'}`);
+  refresh(); dirty();
 }
 
 const startAll = () => snap.devices.forEach(d => nodeState(d.id) === 'stopped' && (d.kind !== 'ext' || meta.get(d.id)?.image || meta.get(d.id)?.diskSaved) && startNode(d.id));
@@ -433,6 +498,15 @@ function toggleLink(id) {
   if (!l) return;
   lab.set_link_up(id, !l.up);
   refresh(); renderAll(); dirty();
+}
+
+function linkBadge(l) {
+  const bits = [];
+  if (l.speed && l.speed !== '1G') bits.push(l.speed === 'WAN' ? 'WAN' : l.speed);
+  if ((l.delay ?? 4) > 4 || l.jitter) bits.push(l.jitter ? `${l.delay}ms±${l.jitter}` : `${l.delay}ms`);
+  if (l.loss) bits.push(`${l.loss}%`);
+  if (l.mtu) bits.push(`MTU ${l.mtu}`);
+  return bits.join(' · ');
 }
 
 function linkTitle(l) {
@@ -459,12 +533,13 @@ function catOf(ev) {
     case 'arp_req': case 'arp_rep': return 'ARP';
     case 'echo_req': case 'echo_rep': case 'deliver': return 'ICMP';
     case 'learn': case 'flood': case 'forward': return 'L2';
+    case 'dhcp': case 'dns': case 'tcp': case 'http': case 'udp': return 'L4';
     case 'ext_tx': case 'ext_rx': return 'EXT';
     case 'sys': return 'SYS';
-    default: return /ARP/.test(ev.msg) ? 'ARP' : /ICMP|echo|reply/i.test(ev.msg) ? 'ICMP' : /eth\[|ext/i.test(ev.msg) ? 'EXT' : 'L2';
+    default: return /ARP/.test(ev.msg) ? 'ARP' : /ICMP|echo|reply/i.test(ev.msg) ? 'ICMP' : /DHCP|DNS|TCP|HTTP|UDP/i.test(ev.msg) ? 'L4' : /eth\[|ext/i.test(ev.msg) ? 'EXT' : 'L2';
   }
 }
-const CAT_COLOR = { ARP: 'p-arp', ICMP: 'p-icmp', L2: 'p-l2', EXT: 'p-ext', SYS: 'muted' };
+const CAT_COLOR = { ARP: 'p-arp', ICMP: 'p-icmp', L2: 'p-l2', L4: 'p-tcp', EXT: 'p-ext', SYS: 'muted' };
 
 function pushEvent(ev) {
   ev.n = ++evSeq;
@@ -593,7 +668,7 @@ resize();
 
 function readColors() {
   const cs = getComputedStyle(document.documentElement);
-  for (const k of ['canvas', 'panel', 'panel-2', 'line', 'line-2', 'text', 'text-2', 'muted', 'accent', 'accent-soft', 'ok', 'warn', 'bad', 'grid-dot', 'grid-major', 'link', 'p-arp', 'p-icmp', 'p-l2', 'p-ext', 'p-drop', 'p-ok'])
+  for (const k of ['canvas', 'panel', 'panel-2', 'line', 'line-2', 'text', 'text-2', 'muted', 'accent', 'accent-soft', 'ok', 'warn', 'bad', 'grid-dot', 'grid-major', 'link', 'p-arp', 'p-icmp', 'p-l2', 'p-ext', 'p-drop', 'p-ok', 'p-tcp', 'p-udp', 'p-dhcp', 'p-dns', 'p-stp', 'p-vlan', 'p-route'])
     C[k] = cs.getPropertyValue('--' + k).trim();
 }
 
@@ -785,6 +860,12 @@ function draw(now) {
         pill(x + ux * off * s, y + uy * off * s, ifName(dev, port), C.panel, C['text-2'], C.line);
       }
     }
+    const badge = linkBadge(l);
+    if (badge && len > 70) {
+      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      ctx.font = `600 10px ${getMono()}`;
+      pill(mx, my + (l.capture ? 16 : 0), badge, C.panel, C['text-2'], C.line);
+    }
     if (l.capture) {
       const mx = (ax + bx) / 2, my = (ay + by) / 2;
       ctx.fillStyle = C.panel; ctx.strokeStyle = C.bad; ctx.lineWidth = 1.5;
@@ -796,8 +877,8 @@ function draw(now) {
     for (const f of l.frames) {
       const t = clamp(f.t + f.dir * tickFrac / (l.delay || 4), 0, 1);
       const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
-      const proto = f.color === 'arp' ? 'ARP' : f.color === 'icmp' ? 'ICMP' : 'ETH';
-      const col = f.color === 'arp' ? C['p-arp'] : f.color === 'icmp' ? C['p-icmp'] : C['p-ext'];
+      const proto = ({ arp: 'ARP', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', dhcp: 'DHCP', dns: 'DNS', ospf: 'OSPF', vlan: 'VLAN', stp: 'STP' })[f.color] || 'ETH';
+      const col = C['p-' + (f.color || 'ext')] || C['p-ext'];
       if (view.z < .55) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); continue; }
       ctx.font = `700 9.5px ${getMono()}`;
       const w = ctx.measureText(proto).width + 12;
@@ -1890,7 +1971,7 @@ $('[data-collapse="topo"]').onclick = () => $('#topo').classList.toggle('collaps
 
 let inspSig = '';
 function renderInspectorSoon() {
-  if ($('#inspector').contains(document.activeElement) && document.activeElement.matches('input, select')) return;
+  if ($('#inspector').contains(document.activeElement) && document.activeElement.matches('input, select, textarea')) return;
   renderInspector(false);
 }
 
@@ -1983,6 +2064,8 @@ function nodeInspector(id) {
     root.append(cfg);
   }
 
+  root.append(startupSection(id, d, st));
+
   // interfaces
   const n = portCount(id);
   const maxP = Math.min(d.ports.length, t.maxPorts ?? d.ports.length);
@@ -2036,6 +2119,7 @@ function nodeInspector(id) {
       refresh(); dirty(); renderInspector(true);
     };
     root.append(s);
+    root.append(servicesSection(id, d));
   }
 
   if (d.kind === 'router') {
@@ -2060,6 +2144,7 @@ function nodeInspector(id) {
     $('[data-add]', s).onclick = add;
     $('[data-n]', s).onkeydown = e => { if (e.key === 'Enter') add(); };
     root.append(s);
+    root.append(natSection(id, d));
   }
 
   // quick ping
@@ -2096,6 +2181,8 @@ function vmSettings(id, d, st) {
   const ros = isRos(id);
   const msw = tplOf(id) === 'mikrotik-sw';
   const osw = tplOf(id) === 'ovs-sw';
+  const frr = tplOf(id) === 'frr';
+  const fw = tplOf(id) === 'firewall';
   const nics = portCount(id);
   const when = m.diskSaved ? new Date(m.diskSaved).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
   const root = h(`<div>
@@ -2105,6 +2192,8 @@ function vmSettings(id, d, st) {
       ${ros ? `<p class="muted" style="margin:8px 0 0;font-size:12px">First start boots the RouterOS v6 x86 ISO on the <b>Screen</b> tab: press <span class="mono">a</span> then <span class="mono">i</span>, answer <span class="mono">n</span>, <span class="mono">y</span>, then Enter to reboot into the installed system. Login <span class="mono">admin</span>, empty password. The Serial tab is the console after that.</p>` : ''}
       ${msw ? `<p class="muted" style="margin:6px 0 0;font-size:12px"><b>CRS Bridge VLANs &amp; RSTP</b>: <span class="mono">/interface bridge add name=br0 vlan-filtering=yes protocol-mode=rstp</span> and add <span class="mono">ether1..ether8</span> under <span class="mono">/interface bridge port</span>.</p>` : ''}
       ${osw ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>Open vSwitch / Linux Bridge</b>: configure L2 switching, 802.1Q VLAN trunks, STP/RSTP, or LACP bonding across <span class="mono">eth0..eth7</span> using <span class="mono">ovs-vsctl</span> or <span class="mono">ip link add br0 type bridge vlan_filtering 1</span>.</p>` : ''}
+      ${frr ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>FRRouting</b>: 32-bit Linux with <span class="mono">frr</span>. Ports <span class="mono">eth0</span>–<span class="mono">eth7</span>. <span class="mono">vtysh</span> for OSPFv2/v3, IS-IS, BGP EVPN and BFD. A starter script is in Startup script.</p>` : ''}
+      ${fw ? `<p class="muted" style="margin:8px 0 0;font-size:12px"><b>Firewall</b>: 32-bit Linux. <span class="mono">wan0</span> outside, <span class="mono">dmz0</span>, <span class="mono">lan0</span>–<span class="mono">lan5</span> inside. The startup script installs a stateful <span class="mono">nftables</span> forward chain.</p>` : ''}
     </div>
     <div class="sect"><h4>Hardware</h4>
       <div class="kv">
@@ -2141,6 +2230,76 @@ function vmSettings(id, d, st) {
   return root;
 }
 
+function startupSection(id, d, st) {
+  const m = meta.get(id);
+  const ext = d.kind === 'ext';
+  const s = h(`<div class="sect"><h4>Startup script</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">${ext
+      ? 'Plain text pasted into the guest console. IOS NVRAM above is separate. Apply once the prompt is up.'
+      : 'Cisco-like lines, a MikroTik .rsc, or a shell script. Lines starting with ! or # are skipped on simulated nodes.'}</p>
+    <textarea class="field area" spellcheck="false" aria-label="Startup script">${esc(m.startup || '')}</textarea>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap">
+      ${ext ? '' : `<label class="check"><input type="checkbox" data-boot ${m.startupBoot ? 'checked' : ''}/>Apply on start</label>`}
+      <span class="spacer"></span>
+      <button class="btn sm primary" data-apply ${st === 'running' ? '' : 'disabled'}>Apply</button>
+    </div></div>`);
+  const ta = $('textarea', s);
+  ta.oninput = () => { m.startup = ta.value; dirty(); };
+  const boot = $('[data-boot]', s);
+  if (boot) boot.onchange = () => { m.startupBoot = boot.checked; dirty(); };
+  $('[data-apply]', s).onclick = () => { m.startup = ta.value; applyStartup(id, false); };
+  return s;
+}
+
+function servicesSection(id, d) {
+  const s = h(`<div class="sect"><h4>Services</h4>
+    <div class="row" style="flex-wrap:wrap;gap:12px">
+      <label class="check"><input type="checkbox" data-k="dhcp" ${d.svc_dhcp ? 'checked' : ''}/>DHCP server</label>
+      <label class="check"><input type="checkbox" data-k="dns" ${d.svc_dns ? 'checked' : ''}/>DNS</label>
+      <label class="check"><input type="checkbox" data-k="http" ${d.svc_http ? 'checked' : ''}/>HTTP :80</label>
+    </div>
+    <p class="muted" style="margin:8px 0 0;font-size:12px">DHCP answers Discover on a connected interface. DNS answers its A records, or this host's address for any other name. HTTP replies <span class="mono">netlab</span>.</p>
+    ${d.svc_dns ? `<div class="row" style="margin-top:8px"><input class="field" data-n placeholder="lab.local" /><input class="field" data-ip placeholder="10.1.0.9" /><button class="btn sm" data-add>A record</button></div>
+      <ul class="routes">${(d.dns_records || []).map(([n, ip]) => `<li><span>${esc(n)} → ${esc(ip)}</span></li>`).join('') || ''}</ul>` : ''}
+    ${d.dhcp ? `<p style="margin:8px 0 0">DHCP client: <span class="mono">${esc(d.dhcp)}</span>${d.resolver ? ` · DNS ${esc(d.resolver)}` : ''}</p>` : ''}
+  </div>`);
+  const apply = () => {
+    const on = k => $(`[data-k="${k}"]`, s).checked;
+    lab.set_services(id, on('dhcp'), on('dns'), on('http'));
+    refresh(); dirty(); renderInspector(true);
+  };
+  $$('[data-k]', s).forEach(c => c.onchange = apply);
+  const add = $('[data-add]', s);
+  if (add) add.onclick = () => {
+    const name = $('[data-n]', s).value.trim(), ip = $('[data-ip]', s).value.trim();
+    if (!name || !/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !lab.add_dns_record(id, name, ip)) return toast('A record needs a name and an IPv4 address', 'err');
+    refresh(); dirty(); renderInspector(true);
+  };
+  return s;
+}
+
+function natSection(id, d) {
+  const n = portCount(id);
+  const s = h(`<div class="sect"><h4>NAT</h4>
+    <p class="muted" style="margin:0 0 8px;font-size:12px">Inside hosts are masqueraded out of the outside interface. One outside port. With an outside and no explicit inside, every other port is inside.</p>
+    <table class="iftable"><tbody></tbody></table></div>`);
+  const tb = $('tbody', s);
+  for (let i = 0; i < n; i++) {
+    const role = d.ports[i].nat || '';
+    const tr = h(`<tr><td class="ifn">${esc(ifName(id, i))}</td><td><select class="field" data-p="${i}">
+      <option value="" ${role ? '' : 'selected'}>off</option>
+      <option value="inside" ${role === 'inside' ? 'selected' : ''}>inside</option>
+      <option value="outside" ${role === 'outside' ? 'selected' : ''}>outside</option>
+    </select></td></tr>`);
+    $('select', tr).onchange = e => {
+      lab.set_nat(id, i, e.target.value || 'off');
+      refresh(); dirty(); renderInspector(true);
+    };
+    tb.append(tr);
+  }
+  return s;
+}
+
 function maskLen(m) { return (m ?? '').split('.').reduce((s, o) => s + ((+o).toString(2).match(/1/g)?.length ?? 0), 0); }
 function lenMask(n) { return [0, 1, 2, 3].map(i => { const b = clamp(n - i * 8, 0, 8); return (0xff << (8 - b)) & 0xff; }).join('.'); }
 function outPortFor(d, ip) {
@@ -2155,7 +2314,7 @@ function linkInspector(lid) {
   const ok = l.up && nodeState(l.a) === 'running' && nodeState(l.b) === 'running';
   const root = h(`<div>
     <div class="cable-head"><svg viewBox="0 0 48 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 22c10 0 10-16 21-16s11 16 21 16"/><circle cx="3" cy="22" r="2.5" fill="currentColor"/><circle cx="45" cy="22" r="2.5" fill="currentColor"/></svg>
-      <div><b style="font-size:15px">Ethernet link</b><div class="muted" style="font-size:12px">Copper · ${(l.delay * TICK_MS).toFixed(1)} ms propagation</div></div></div>
+      <div><b style="font-size:15px">Ethernet link</b><div class="muted" style="font-size:12px">${esc(l.speed || '1G')} · ${l.delay} ms${l.jitter ? ` ±${l.jitter}` : ''}${l.loss ? ` · ${l.loss}% loss` : ''}${l.mtu ? ` · MTU ${l.mtu}` : ''}</div></div></div>
     <div class="ends">
       <div class="end"><b>${esc(a.name)}</b><span>${esc(ifName(l.a, l.a_port))}</span></div>
       <div class="wire ${l.up ? '' : 'down'}"></div>
@@ -2167,12 +2326,32 @@ function linkInspector(lid) {
       <dt>In flight</dt><dd>${l.frames.length} frame${l.frames.length === 1 ? '' : 's'}</dd>
       <dt>Capture</dt><dd>${l.capture ? `<span class="pill bad"><span class="dot stopped"></span>Recording · ${caps.get(lid)?.packets.length ?? 0}</span>` : 'off'}</dd>
     </dl></div>
+    <div class="sect"><h4>Link quality</h4>
+      <div class="kv">
+        <dt>Delay</dt><dd><input class="field" data-delay type="number" min="1" max="60000" value="${l.delay}" /> <span class="muted">ms</span></dd>
+        <dt>Jitter</dt><dd><input class="field" data-jitter type="number" min="0" max="60000" value="${l.jitter || 0}" /> <span class="muted">±ms</span></dd>
+        <dt>Loss</dt><dd><input class="field" data-loss type="number" min="0" max="100" value="${l.loss || 0}" /> <span class="muted">%</span></dd>
+        <dt>MTU</dt><dd><input class="field" data-mtu type="number" min="0" max="9000" value="${l.mtu || 0}" /> <span class="muted">0 = none</span></dd>
+        <dt>Speed</dt><dd><select class="field" data-speed>${[['10M', '10M'], ['100M', '100M'], ['1G', '1G'], ['10G', '10G'], ['WAN', 'WAN Serial']].map(([v, label]) => `<option value="${v}" ${v === (l.speed || '1G') ? 'selected' : ''}>${label}</option>`).join('')}</select></dd>
+      </div>
+      <p class="muted" style="margin:8px 0 0;font-size:12px">Delay and jitter are milliseconds in Realtime. 10M, 100M and WAN Serial add serialization delay. Loss uses a fixed sequence, so 0% never drops and 100% always does.</p>
+    </div>
     <div class="insp-actions" style="padding-top:12px">
       <button class="btn sm ${l.up ? '' : 'primary'}" data-a="plug">${ico(l.up ? 'unplug' : 'plug')}${l.up ? 'Unplug' : 'Plug in'}</button>
       <button class="btn sm" data-a="cap">${ico('capture')}${l.capture ? 'Stop capture' : 'Start capture'}</button>
       <span class="spacer"></span>
       <button class="btn sm danger" data-a="del">${ico('trash')}Remove</button>
     </div></div>`);
+  const commit = () => {
+    const num = (sel, d, lo, hi) => {
+      const v = +$(sel, root).value;
+      return Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d;
+    };
+    const speed = $('select[data-speed]', root).value || '1G';
+    lab.set_link_impair(lid, num('[data-delay]', 4, 1, 60000), num('[data-jitter]', 0, 0, 60000), num('[data-loss]', 0, 0, 100), num('[data-mtu]', 0, 0, 9000), speed);
+    refresh(); dirty(); renderInspector(true);
+  };
+  $$('[data-delay],[data-jitter],[data-loss],[data-mtu],[data-speed]', root).forEach(el => { el.onchange = commit; });
   $$('[data-a]', root).forEach(btn => btn.onclick = () => ({
     plug: () => toggleLink(lid), cap: () => setCapture(lid, !l.capture), del: () => { selectOnly('link', lid); deleteSelection(); },
   })[btn.dataset.a]());
@@ -2338,7 +2517,7 @@ let evTbody = null, evWrap = null, evRendered = 0;
 function eventsPane() {
   const pane = h(`<div class="pane">
     <div class="pane-bar">
-      ${['ARP', 'ICMP', 'L2', 'EXT', 'SYS'].map(c => `<button class="chip ${evFilter.cats.has(c) ? '' : 'off'}" data-cat="${c}" style="--c:var(--${CAT_COLOR[c]})">${c}</button>`).join('')}
+      ${['ARP', 'ICMP', 'L2', 'L4', 'EXT', 'SYS'].map(c => `<button class="chip ${evFilter.cats.has(c) ? '' : 'off'}" data-cat="${c}" style="--c:var(--${CAT_COLOR[c]})">${c}</button>`).join('')}
       <button class="chip ${evFilter.dropsOnly ? '' : 'off'}" data-drops style="--c:var(--bad)">Drops only</button>
       <span class="spacer"></span>
       <label class="search">${ico('search')}<input placeholder="Filter text" value="${esc(evFilter.q)}" /></label>
@@ -2420,8 +2599,25 @@ function capturePane() {
       ${live ? `<button class="btn sm" data-a="pause">${ico(s.paused ? 'play' : 'pause')}${s.paused ? 'Resume' : 'Pause'}</button>
       <button class="btn sm" data-a="stop">${ico('stop')}Stop</button>` : `<button class="btn sm" data-a="restart">${ico('play')}Restart</button>`}
       <button class="btn sm" data-a="clear">${ico('trash')}Clear</button>
+      <button class="btn sm" data-a="replay">Replay</button>
       <button class="btn sm primary" data-a="pcap" ${s.packets.length ? '' : 'disabled'}>${ico('download')}Save .pcap</button>
     </div>
+    <div class="pane-bar cap-filter">
+      <label class="search" style="flex:1">${ico('search')}<input data-filt placeholder="stp · vlan == 10 · arp · icmp · ip == 10.0.0.1" value="${esc(s.filter || '')}" spellcheck="false" /></label>
+    </div>
+    <details class="cap-craft">
+      <summary>Craft frame</summary>
+      <div class="row" style="flex-wrap:wrap;padding:6px 8px;gap:6px">
+        <select class="field" data-from style="width:auto"></select>
+        <select class="field" data-kind style="width:auto"><option value="arp">ARP who-has</option><option value="icmp">ICMP echo</option></select>
+        <input class="field" data-dst placeholder="dst MAC" value="ff:ff:ff:ff:ff:ff" spellcheck="false" />
+        <input class="field" data-srcm placeholder="src MAC" spellcheck="false" />
+        <input class="field" data-vlan placeholder="VLAN" spellcheck="false" style="max-width:70px" />
+        <input class="field" data-aip placeholder="sender / src IP" spellcheck="false" />
+        <input class="field" data-bip placeholder="target IP" spellcheck="false" />
+        <button class="btn sm" data-a="craft">Inject</button>
+      </div>
+    </details>
     <div class="cap">
       <div class="cap-sessions"></div>
       <div class="cap-main">
@@ -2437,8 +2633,40 @@ function capturePane() {
     row.onclick = () => { capLink = lid; capPkt = null; renderDockBody(); };
     sess.append(row);
   }
+  const link = linkById.get(capLink);
+  const fromSel = $('[data-from]', pane);
+  if (link && fromSel) {
+    for (const [dev, port] of [[link.a, link.a_port], [link.b, link.b_port]]) {
+      const opt = document.createElement('option');
+      opt.value = String(dev);
+      opt.textContent = `${byId.get(dev)?.name ?? '?'} ${ifName(dev, port)}`;
+      fromSel.append(opt);
+    }
+    const fillMac = () => {
+      const dev = +fromSel.value;
+      const port = link.a === dev ? link.a_port : link.b_port;
+      const mac = byId.get(dev)?.ports?.[port]?.mac;
+      if (mac) $('[data-srcm]', pane).value = mac;
+    };
+    fromSel.onchange = fillMac;
+    fillMac();
+  }
+  const filt = $('[data-filt]', pane);
+  if (filt) filt.oninput = e => {
+    s.filter = e.target.value;
+    if (capTbody) { capTbody.innerHTML = ''; delete capTbody.dataset.filt; }
+    renderCapture();
+  };
   $$('[data-a]', pane).forEach(b => b.onclick = () => {
     const a = b.dataset.a;
+    if (a === 'craft') { injectCraft(pane, capLink); return; }
+    if (a === 'replay') {
+      const p = s.packets.find(x => x.n === capPkt);
+      if (!p) return toast('Select a frame to replay', 'err');
+      if (!lab.inject_link(capLink, p.from, p.bytes)) return toast('Could not replay that frame', 'err');
+      toast('Frame replayed onto the link');
+      return;
+    }
     if (a === 'pause') s.paused = !s.paused;
     if (a === 'stop') { lab.set_capture(capLink, false); refresh(); }
     if (a === 'restart') { lab.set_capture(capLink, true); s.paused = false; refresh(); }
@@ -2460,12 +2688,18 @@ function renderCapture() {
   const s = caps.get(capLink);
   if (!s) return;
   const atBottom = capWrap.scrollHeight - capWrap.scrollTop - capWrap.clientHeight < 30;
+  const filt = (s.filter || '').trim();
+  if (capTbody.dataset.filt !== filt) {
+    capTbody.innerHTML = '';
+    capTbody.dataset.filt = filt;
+  }
   const lastN = +capTbody.lastChild?.firstChild?.textContent || 0;
   const frag = document.createDocumentFragment();
   for (const p of s.packets) {
+    if (!matchFilter(p.d, filt)) continue;
     if (p.n <= lastN) continue;
     const tr = document.createElement('tr');
-    tr.className = 'p-' + p.d.proto.toLowerCase() + (capPkt === p.n ? ' sel' : '');
+    tr.className = 'p-' + protoClass(p.d) + (capPkt === p.n ? ' sel' : '');
     tr.innerHTML = `<td class="n">${p.n}</td><td class="t">${(p.tick * TICK_MS / 1000).toFixed(4)}</td><td class="mono">${esc(p.d.src)}</td><td class="mono">${esc(p.d.dst)}</td>
       <td class="proto mono">${esc(p.d.proto)}</td><td class="t">${p.bytes.length}</td><td title="${esc(p.d.info)}">${esc(p.d.info)}</td>`;
     tr.onclick = () => { capPkt = p.n; $$('tr.sel', capTbody).forEach(r => r.classList.remove('sel')); tr.classList.add('sel'); renderPacket(); };
@@ -2497,6 +2731,23 @@ function renderPacket() {
   capHex.innerHTML = hexRows(p.bytes).map(r =>
     `<div><span class="o">${r.off}</span>${r.bytes.map(b => `<span class="b" data-i="${b.i}">${b.h}</span>`).join(' ')}${'   '.repeat(16 - r.bytes.length)}<span class="a">${r.ascii.map(a => `<span data-i="${a.i}">${esc(a.c)}</span>`).join('')}</span></div>`).join('');
 }
+function injectCraft(pane, lid) {
+  const from = +$('[data-from]', pane).value;
+  const kind = $('[data-kind]', pane).value;
+  const aip = $('[data-aip]', pane).value.trim();
+  const bip = $('[data-bip]', pane).value.trim();
+  const bytes = craftFrame({
+    dst: $('[data-dst]', pane).value.trim(),
+    src: $('[data-srcm]', pane).value.trim(),
+    vlan: +$('[data-vlan]', pane).value || 0,
+    kind,
+    spa: aip, tpa: bip, icmpSrc: aip, icmpDst: bip,
+  });
+  if (!bytes) return toast('Craft needs a source and destination MAC, plus two IPv4 addresses', 'err');
+  if (!lab.inject_link(lid, from, bytes)) return toast('Could not inject on this link', 'err');
+  toast(kind === 'arp' ? 'ARP injected' : 'ICMP injected', 'ok');
+}
+
 function hl(range) {
   $$('.hl', capHex).forEach(e => e.classList.remove('hl'));
   if (!range) return;

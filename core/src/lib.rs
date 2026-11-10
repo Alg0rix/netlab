@@ -3,12 +3,13 @@ pub mod eth;
 mod events;
 mod frame;
 mod link;
+mod services;
 mod topology;
 
 pub use device::{Device, DeviceId, DeviceKind, Pending, Port, Route};
 pub use events::SimEvent;
 pub use frame::{Frame, Payload, BROADCAST_MAC};
-pub use link::{Endpoint, InFlight, Link, LinkId};
+pub use link::{Endpoint, InFlight, Link, LinkId, LinkSpeed};
 pub use topology::{Capture, Snapshot, Topology};
 
 pub fn ip_str(ip: [u8; 4]) -> String {

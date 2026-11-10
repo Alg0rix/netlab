@@ -17,6 +17,8 @@ export const VM_DEFAULTS = {
   routeros: { ram: 256, diskMB: 128, nic: 'ne2k', nics: 4 },
   'mikrotik-sw': { ram: 256, diskMB: 128, nic: 'ne2k', nics: 8 },
   'ovs-sw': { ram: 256, diskMB: 256, nic: 'ne2k', nics: 8 },
+  frr: { ram: 256, diskMB: 256, nic: 'ne2k', nics: 8 },
+  firewall: { ram: 256, diskMB: 256, nic: 'ne2k', nics: 8 },
   x86: { ram: 128, diskMB: 256, nic: 'ne2k', nics: 4 },
 };
 

@@ -1583,6 +1583,8 @@ const NODE_COLOR = {
   routeros: '#a58bff',
   'mikrotik-sw': '#a58bff',
   'ovs-sw': '#f2b84b',
+  frr: '#3ccf7e',
+  firewall: '#ff5d5d',
   x86: '#f2b84b',
   switch: '#62b4ff',
   pc: '#7cc4ff',

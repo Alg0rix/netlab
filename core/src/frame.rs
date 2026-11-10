@@ -64,7 +64,7 @@ impl Frame {
         match self.payload {
             Payload::IcmpEchoRequest | Payload::IcmpEchoReply => "icmp",
             Payload::ArpRequest { .. } | Payload::ArpReply { .. } => "arp",
-            Payload::Raw { .. } => "raw",
+            Payload::Raw { .. } => self.raw.as_deref().map(crate::eth::l4_color).unwrap_or("raw"),
         }
     }
 }

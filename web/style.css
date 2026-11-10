@@ -25,6 +25,13 @@
   --shadow: 0 8px 28px rgba(0, 0, 0, .45), 0 1px 0 rgba(255, 255, 255, .03) inset;
   --p-arp: #f2b84b;
   --p-icmp: #4c9bff;
+  --p-tcp: #3ccf7e;
+  --p-udp: #2fd0c0;
+  --p-dhcp: #e07a2e;
+  --p-dns: #a58bff;
+  --p-stp: #ff7ab6;
+  --p-vlan: #7cc4ff;
+  --p-route: #f2c14b;
   --p-l2: #a58bff;
   --p-ext: #2fd0c0;
   --p-drop: #ff5d5d;
@@ -59,6 +66,13 @@
   --shadow: 0 8px 28px rgba(20, 30, 50, .14);
   --p-arp: #c58a0d;
   --p-icmp: #1f6feb;
+  --p-tcp: #17a35a;
+  --p-udp: #0f9e90;
+  --p-dhcp: #c45c12;
+  --p-dns: #7552e0;
+  --p-stp: #c43b78;
+  --p-vlan: #2d6fd1;
+  --p-route: #c58a0d;
   --p-l2: #7552e0;
   --p-ext: #0f9e90;
   --p-drop: #d93838;
@@ -273,6 +287,7 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 .field:focus { border-color: var(--accent); background: var(--panel); }
 .field.bad { border-color: var(--bad); }
 .field::placeholder { color: var(--muted); opacity: .8; }
+textarea.field.area { height: 140px; padding: 6px 7px; resize: vertical; line-height: 1.45; white-space: pre; }
 select.field { font-family: var(--font); }
 .row { display: flex; gap: 6px; align-items: center; }
 .row > .field { flex: 1; min-width: 0; }
@@ -359,8 +374,29 @@ table.ev tr.deliver td.msg { color: var(--ok); }
 .cap-hex .b { padding: 0 1px; }
 .cap-hex .a { margin-left: 14px; color: var(--text-2); }
 .cap-hex .hl { background: var(--accent-soft); color: var(--accent); border-radius: 2px; }
+table.ev tr.p-arp { background: color-mix(in srgb, var(--p-arp) 14%, transparent); }
+table.ev tr.p-icmp { background: color-mix(in srgb, var(--p-icmp) 12%, transparent); }
+table.ev tr.p-tcp { background: color-mix(in srgb, var(--p-tcp) 12%, transparent); }
+table.ev tr.p-udp { background: color-mix(in srgb, var(--p-udp) 12%, transparent); }
+table.ev tr.p-dhcp { background: color-mix(in srgb, var(--p-dhcp) 16%, transparent); }
+table.ev tr.p-dns { background: color-mix(in srgb, var(--p-dns) 14%, transparent); }
+table.ev tr.p-stp { background: color-mix(in srgb, var(--p-stp) 14%, transparent); }
+table.ev tr.p-vlan { background: color-mix(in srgb, var(--p-vlan) 12%, transparent); }
+table.ev tr.p-route { background: color-mix(in srgb, var(--p-route) 14%, transparent); }
 table.ev tr.p-arp td.proto { color: var(--p-arp); }
 table.ev tr.p-icmp td.proto { color: var(--p-icmp); }
+table.ev tr.p-tcp td.proto { color: var(--p-tcp); }
+table.ev tr.p-udp td.proto { color: var(--p-udp); }
+table.ev tr.p-dhcp td.proto { color: var(--p-dhcp); }
+table.ev tr.p-dns td.proto { color: var(--p-dns); }
+table.ev tr.p-stp td.proto { color: var(--p-stp); }
+table.ev tr.p-vlan td.proto { color: var(--p-vlan); }
+table.ev tr.p-route td.proto { color: var(--p-route); }
+table.ev tr.sel { background: var(--accent-soft); }
+.cap-filter { border-top: 0; padding-top: 0; }
+.cap-craft { border-bottom: 1px solid var(--line); font-size: 12px; }
+.cap-craft summary { cursor: pointer; padding: 4px 10px; color: var(--text-2); }
+.kv dd .field { display: inline-block; width: auto; min-width: 72px; }
 .pane-empty { flex: 1; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 20px; }
 .pane-empty b { color: var(--text-2); display: block; margin-bottom: 4px; font-weight: 600; }
 

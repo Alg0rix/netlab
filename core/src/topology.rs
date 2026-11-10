@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::device::{Device, DeviceKind, Route};
 use crate::events::SimEvent;
 use crate::frame::{Frame, Payload};
-use crate::link::{Endpoint, InFlight, Link};
+use crate::link::{Endpoint, InFlight, Link, LinkSpeed};
 use crate::{ip_str, mac_str, parse_ip, DeviceId, LinkId};
 
 const LINK_DELAY: u32 = 4;
@@ -28,6 +28,7 @@ pub struct Topology {
     next_mac: u64,
     pub tick: u64,
     pub events: Vec<SimEvent>,
+    rng: u32,
 }
 
 #[derive(Serialize)]
@@ -51,6 +52,12 @@ pub struct DeviceSnap {
     pub arp: Vec<(String, String)>,
     /// (mac, port) — switches
     pub macs: Vec<(String, usize)>,
+    pub dhcp: &'static str,
+    pub resolver: Option<String>,
+    pub svc_dhcp: bool,
+    pub svc_dns: bool,
+    pub svc_http: bool,
+    pub dns_records: Vec<(String, String)>,
 }
 
 #[derive(Serialize)]
@@ -67,6 +74,8 @@ pub struct PortSnap {
     pub mask: Option<String>,
     pub mac: String,
     pub link: Option<LinkId>,
+    /// "" | "inside" | "outside"
+    pub nat: &'static str,
 }
 
 #[derive(Serialize)]
@@ -79,6 +88,10 @@ pub struct LinkSnap {
     pub up: bool,
     pub capture: bool,
     pub delay: u32,
+    pub jitter: u32,
+    pub loss: u8,
+    pub mtu: u16,
+    pub speed: &'static str,
     pub frames: Vec<FrameSnap>,
 }
 
@@ -103,7 +116,20 @@ impl Topology {
             next_mac: BASE_MAC,
             tick: 0,
             events: Vec::new(),
+            rng: 0xA5A5_1234,
         }
+    }
+
+    fn rng(&mut self) -> u32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        if x == 0 {
+            x = 0xA5A5_1234;
+        }
+        self.rng = x;
+        x
     }
 
     fn alloc_mac(&mut self) -> u64 {
@@ -169,6 +195,10 @@ impl Topology {
             a: Endpoint { device: a, port: pa },
             b: Endpoint { device: b, port: pb },
             delay: LINK_DELAY,
+            jitter: 0,
+            loss: 0,
+            mtu: 0,
+            speed: LinkSpeed::G1,
             up: true,
             capture: false,
             in_flight: Vec::new(),
@@ -214,6 +244,11 @@ impl Topology {
                 d.pending.clear();
                 d.arp_cache.clear();
                 d.mac_table.clear();
+                d.flows.clear();
+                d.nat.clear();
+                if d.dhcp.as_ref().map(|c| c.state != 3).unwrap_or(false) {
+                    d.dhcp = None;
+                }
             }
         }
     }
@@ -332,6 +367,13 @@ impl Topology {
 
     pub fn step(&mut self) {
         self.tick += 1;
+        let tick = self.tick;
+        let ids: Vec<DeviceId> = self.devices.keys().copied().collect();
+        for id in ids {
+            if let Some(d) = self.devices.get_mut(&id) {
+                crate::services::poll(d, tick, &mut self.events);
+            }
+        }
 
         // advance and collect arrivals
         let mut arrivals: Vec<(Endpoint, Frame, LinkId)> = Vec::new();
@@ -341,7 +383,7 @@ impl Topology {
             }
             let mut rest = Vec::new();
             for f in link.in_flight.drain(..) {
-                if f.progress >= link.delay {
+                if f.progress >= f.budget {
                     arrivals.push((f.to, f.frame, link.id));
                 } else {
                     rest.push(f);
@@ -384,33 +426,194 @@ impl Topology {
             }
         }
         for (link_id, from, frame) in tx {
-            if let Some(link) = self.links.get_mut(&link_id) {
-                if !link.up {
-                    let name = |id| self.devices.get(&id).map(|d: &Device| d.name.clone()).unwrap_or_default();
-                    let to = link.other(from);
-                    let msg = format!(
-                        "cable {} \u{2194} {} is unplugged \u{2014} {} lost",
-                        name(from.device),
-                        name(to.device),
-                        frame.label()
-                    );
-                    self.events.push(SimEvent::new(self.tick, Some(from.device), Some(link_id), "drop", msg));
-                    continue;
-                }
-                let to = link.other(from);
-                if link.capture {
-                    let bytes = frame.raw.clone().or_else(|| crate::eth::encode(&frame));
-                    if let Some(bytes) = bytes {
-                        self.captures.push(Capture { link: link_id, tick: self.tick, from: from.device, bytes });
-                    }
-                }
-                link.in_flight.push(InFlight {
-                    frame,
-                    progress: 0,
-                    to,
-                });
+            self.enqueue(link_id, from, frame);
+        }
+    }
+
+    /// Put `frame` on `link_id` travelling away from `from`, applying loss, MTU and jitter.
+    fn enqueue(&mut self, link_id: LinkId, from: Endpoint, frame: Frame) {
+        let Some(link) = self.links.get(&link_id) else { return };
+        let up = link.up;
+        let mtu = link.mtu;
+        let loss = link.loss;
+        let jitter = link.jitter;
+        let delay = link.delay.max(1);
+        let speed = link.speed;
+        let capture = link.capture;
+        let to = link.other(from);
+        if !up {
+            let name = |id| self.devices.get(&id).map(|d: &Device| d.name.clone()).unwrap_or_default();
+            let msg = format!(
+                "cable {} \u{2194} {} is unplugged \u{2014} {} lost",
+                name(from.device),
+                name(to.device),
+                frame.label()
+            );
+            self.events.push(SimEvent::new(self.tick, Some(from.device), Some(link_id), "drop", msg));
+            return;
+        }
+        let bytes = frame.raw.clone().or_else(|| crate::eth::encode(&frame));
+        let len = bytes.as_ref().map(|b| b.len()).unwrap_or(0);
+        if mtu > 0 && len as u16 > mtu {
+            self.events.push(SimEvent::new(
+                self.tick,
+                Some(from.device),
+                Some(link_id),
+                "drop",
+                format!("{} dropped — {} bytes exceeds MTU {}", frame.label(), len, mtu),
+            ));
+            return;
+        }
+        if loss > 0 && (self.rng() % 100) < loss as u32 {
+            self.events.push(SimEvent::new(
+                self.tick,
+                Some(from.device),
+                Some(link_id),
+                "drop",
+                format!("{} lost — link impairment {}%", frame.label(), loss),
+            ));
+            return;
+        }
+        let swing = if jitter == 0 { 0 } else { (self.rng() % (jitter * 2 + 1)) as i32 - jitter as i32 };
+        let budget = (delay as i32 + swing).max(1) as u32 + serial_ticks(speed, len);
+        if capture {
+            if let Some(bytes) = bytes.clone() {
+                self.captures.push(Capture { link: link_id, tick: self.tick, from: from.device, bytes });
             }
         }
+        if let Some(link) = self.links.get_mut(&link_id) {
+            link.in_flight.push(InFlight { frame, progress: 0, budget, to });
+        }
+    }
+
+    /// Re-inject a captured (or crafted) Ethernet frame onto a link, from `from` toward the peer.
+    pub fn inject_link(&mut self, link: LinkId, from: DeviceId, bytes: &[u8]) -> bool {
+        if bytes.len() < 14 {
+            return false;
+        }
+        let Some(l) = self.links.get(&link) else { return false };
+        let from_ep = if l.a.device == from {
+            l.a
+        } else if l.b.device == from {
+            l.b
+        } else {
+            return false;
+        };
+        let frame = crate::eth::decode(bytes).unwrap_or_else(|| Frame {
+            src_mac: 0,
+            dst_mac: 0,
+            src_ip: [0; 4],
+            dst_ip: [0; 4],
+            ttl: 64,
+            payload: Payload::Raw { ethertype: 0 },
+            raw: Some(bytes.to_vec()),
+            icmp_echo: None,
+        });
+        self.enqueue(link, from_ep, frame);
+        true
+    }
+
+    pub fn set_link_impair(&mut self, id: LinkId, delay: u32, jitter: u32, loss: u8, mtu: u16, speed: &str) -> bool {
+        let Some(l) = self.links.get_mut(&id) else { return false };
+        l.delay = delay.max(1);
+        l.jitter = jitter;
+        l.loss = loss.min(100);
+        l.mtu = mtu;
+        l.speed = LinkSpeed::parse(speed);
+        true
+    }
+
+    pub fn set_services(&mut self, dev: DeviceId, dhcp: bool, dns: bool, http: bool) {
+        if let Some(d) = self.devices.get_mut(&dev) {
+            d.svc_dhcp = dhcp;
+            d.svc_dns = dns;
+            d.svc_http = http;
+        }
+    }
+
+    pub fn set_dns(&mut self, dev: DeviceId, ip: &str) -> bool {
+        if ip.is_empty() {
+            if let Some(d) = self.devices.get_mut(&dev) {
+                d.resolver = None;
+            }
+            return true;
+        }
+        let Some(ip) = parse_ip(ip) else { return false };
+        if let Some(d) = self.devices.get_mut(&dev) {
+            d.resolver = Some(ip);
+            return true;
+        }
+        false
+    }
+
+    pub fn add_dns_record(&mut self, dev: DeviceId, name: &str, ip: &str) -> bool {
+        let Some(ip) = parse_ip(ip) else { return false };
+        let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+        if name.is_empty() {
+            return false;
+        }
+        if let Some(d) = self.devices.get_mut(&dev) {
+            d.dns_records.retain(|(n, _)| n != &name);
+            d.dns_records.push((name, ip));
+            return true;
+        }
+        false
+    }
+
+    pub fn dhcp_client(&mut self, dev: DeviceId, port: usize) -> bool {
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        crate::services::start_dhcp(d, port, tick, &mut self.events)
+    }
+
+    pub fn dns_query(&mut self, dev: DeviceId, name: &str) -> bool {
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        crate::services::start_dns(d, name, tick, &mut self.events)
+    }
+
+    pub fn probe_tcp(&mut self, dev: DeviceId, dst: &str, port: u16) -> bool {
+        let Some(ip) = parse_ip(dst) else { return false };
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        crate::services::start_tcp(d, ip, port, false, tick, &mut self.events)
+    }
+
+    pub fn http_get(&mut self, dev: DeviceId, dst: &str, port: u16) -> bool {
+        let Some(ip) = parse_ip(dst) else { return false };
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        crate::services::start_tcp(d, ip, port, true, tick, &mut self.events)
+    }
+
+    pub fn probe_udp(&mut self, dev: DeviceId, dst: &str, port: u16, payload: &str) -> bool {
+        let Some(ip) = parse_ip(dst) else { return false };
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        crate::services::start_udp(d, ip, port, payload.as_bytes(), tick, &mut self.events)
+    }
+
+    pub fn set_nat(&mut self, dev: DeviceId, port: usize, role: &str) -> bool {
+        use crate::device::NatRole;
+        let role = match role {
+            "inside" => NatRole::Inside,
+            "outside" => NatRole::Outside,
+            "off" | "none" | "" => NatRole::Off,
+            _ => return false,
+        };
+        let Some(d) = self.devices.get_mut(&dev) else { return false };
+        if port >= d.ports.len() {
+            return false;
+        }
+        if role == NatRole::Outside {
+            for p in &mut d.ports {
+                if p.nat == NatRole::Outside {
+                    p.nat = NatRole::Off;
+                }
+            }
+        }
+        d.ports[port].nat = role;
+        true
     }
 
     /// Inject real wire bytes from an emulated node into ext device `dev`
@@ -461,6 +664,11 @@ impl Topology {
                         mask: p.ip.map(|(_, m)| ip_str(m)),
                         mac: mac_str(p.mac),
                         link: p.link,
+                        nat: match p.nat {
+                            crate::device::NatRole::Inside => "inside",
+                            crate::device::NatRole::Outside => "outside",
+                            crate::device::NatRole::Off => "",
+                        },
                     })
                     .collect(),
                 routes: d
@@ -476,6 +684,12 @@ impl Topology {
                 powered: d.powered,
                 arp: d.arp_cache.iter().map(|(ip, mac)| (ip_str(*ip), mac_str(*mac))).collect(),
                 macs: d.mac_table.iter().map(|(mac, p)| (mac_str(*mac), *p)).collect(),
+                dhcp: crate::services::dhcp_state(d),
+                resolver: d.resolver.map(ip_str),
+                svc_dhcp: d.svc_dhcp,
+                svc_dns: d.svc_dns,
+                svc_http: d.svc_http,
+                dns_records: d.dns_records.iter().map(|(n, ip)| (n.clone(), ip_str(*ip))).collect(),
             })
             .collect();
         let links = self
@@ -490,14 +704,18 @@ impl Topology {
                 up: l.up,
                 capture: l.capture,
                 delay: l.delay,
+                jitter: l.jitter,
+                loss: l.loss,
+                mtu: l.mtu,
+                speed: l.speed.as_str(),
                 frames: l
                     .in_flight
                     .iter()
                     .map(|f| FrameSnap {
                         t: if f.to == l.b {
-                            f.progress as f32 / l.delay as f32
+                            f.progress as f32 / f.budget.max(1) as f32
                         } else {
-                            1.0 - f.progress as f32 / l.delay as f32
+                            1.0 - f.progress as f32 / f.budget.max(1) as f32
                         },
                         dir: if f.to == l.b { 1 } else { -1 },
                         color: f.frame.color_key(),
@@ -508,4 +726,17 @@ impl Topology {
             .collect();
         Snapshot { tick: self.tick, devices, links }
     }
+}
+
+fn serial_ticks(speed: LinkSpeed, len: usize) -> u32 {
+    let bps: u64 = match speed {
+        LinkSpeed::M10 => 10_000_000,
+        LinkSpeed::M100 => 100_000_000,
+        LinkSpeed::Wan => 1_544_000,
+        LinkSpeed::G1 | LinkSpeed::G10 => return 0,
+    };
+    if len == 0 {
+        return 0;
+    }
+    ((len as u64 * 8 * 1000) / bps).max(1) as u32
 }

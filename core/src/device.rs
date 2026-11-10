@@ -17,12 +17,20 @@ pub enum DeviceKind {
     Ext,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NatRole {
+    Off,
+    Inside,
+    Outside,
+}
+
 #[derive(Debug)]
 pub struct Port {
     pub link: Option<LinkId>,
     pub mac: u64,
     /// (address, mask) — L3 ports only
     pub ip: Option<([u8; 4], [u8; 4])>,
+    pub nat: NatRole,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +70,20 @@ pub struct Device {
     pub ext_out: Vec<(usize, Vec<u8>)>,
     /// false = node stopped: drops everything it receives, sends nothing
     pub powered: bool,
+    pub ip_id: u16,
+    pub svc_dhcp: bool,
+    pub svc_dns: bool,
+    pub svc_http: bool,
+    /// extra TCP ports that complete a handshake (firewall probes)
+    pub listen: Vec<u16>,
+    pub resolver: Option<[u8; 4]>,
+    pub dns_records: Vec<(String, [u8; 4])>,
+    /// optional DHCP pool (start, end); otherwise derived from the server address
+    pub pool: Option<([u8; 4], [u8; 4])>,
+    pub leases: HashMap<u64, [u8; 4]>,
+    pub dhcp: Option<crate::services::DhcpClient>,
+    pub flows: Vec<crate::services::Flow>,
+    pub nat: Vec<crate::services::NatEnt>,
 }
 
 impl Device {
@@ -78,6 +100,7 @@ impl Device {
                     link: None,
                     mac,
                     ip: None,
+                    nat: NatRole::Off,
                 })
                 .collect(),
             mac_table: HashMap::new(),
@@ -87,6 +110,18 @@ impl Device {
             outbox: Vec::new(),
             ext_out: Vec::new(),
             powered: true,
+            ip_id: 1,
+            svc_dhcp: false,
+            svc_dns: false,
+            svc_http: false,
+            listen: Vec::new(),
+            resolver: None,
+            dns_records: Vec::new(),
+            pool: None,
+            leases: HashMap::new(),
+            dhcp: None,
+            flows: Vec::new(),
+            nat: Vec::new(),
         }
     }
 
@@ -279,7 +314,7 @@ impl Device {
         }
     }
 
-    fn l3_receive(&mut self, frame: Frame, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
+    fn l3_receive(&mut self, mut frame: Frame, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
         let port_mac = self.ports[in_port].mac;
         if frame.dst_mac != port_mac && frame.dst_mac != BROADCAST_MAC {
             return; // not addressed to us
@@ -333,7 +368,9 @@ impl Device {
                 ));
             }
             Payload::IcmpEchoRequest => {
-                if self.owns_ip(frame.dst_ip) {
+                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                    self.forward(frame, Some(in_port), tick, events);
+                } else if self.owns_ip(frame.dst_ip) {
                     let reply = Frame {
                         src_mac: port_mac,
                         dst_mac: frame.src_mac,
@@ -353,16 +390,23 @@ impl Device {
                     ));
                     self.outbox.push((in_port, reply));
                 } else if self.kind == DeviceKind::Router {
-                    self.forward(frame, tick, events);
+                    self.forward(frame, Some(in_port), tick, events);
                 }
             }
-            Payload::Raw { .. } => {
-                // real-Ethernet payload we don't model — ARP cache was still
-                // updated above from the decoded src/dst; routers could later
-                // forward raw with TTL rewrite inside the wire bytes.
+            Payload::Raw { ethertype: 0x0800 } => {
+                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                    self.forward(frame, Some(in_port), tick, events);
+                } else if crate::services::local_l4(self, &frame, in_port, tick, events) {
+                    // answered or consumed (DHCP, DNS, TCP, UDP)
+                } else if self.kind == DeviceKind::Router {
+                    self.forward(frame, Some(in_port), tick, events);
+                }
             }
+            Payload::Raw { .. } => {}
             Payload::IcmpEchoReply => {
-                if self.owns_ip(frame.dst_ip) {
+                if crate::services::nat_ingress(self, &mut frame, in_port) {
+                    self.forward(frame, Some(in_port), tick, events);
+                } else if self.owns_ip(frame.dst_ip) {
                     events.push(SimEvent::new(
                         tick,
                         Some(self.id),
@@ -376,13 +420,13 @@ impl Device {
                         ),
                     ));
                 } else if self.kind == DeviceKind::Router {
-                    self.forward(frame, tick, events);
+                    self.forward(frame, Some(in_port), tick, events);
                 }
             }
         }
     }
 
-    fn forward(&mut self, mut frame: Frame, tick: u64, events: &mut Vec<SimEvent>) {
+    fn forward(&mut self, mut frame: Frame, in_port: Option<usize>, tick: u64, events: &mut Vec<SimEvent>) {
         frame.ttl = frame.ttl.saturating_sub(1);
         if frame.ttl == 0 {
             events.push(SimEvent::new(
@@ -393,6 +437,10 @@ impl Device {
                 format!("{}: TTL expired for {}", self.name, frame.label()),
             ));
             return;
+        }
+        crate::services::nat_egress(self, &mut frame, in_port);
+        if let Some(raw) = frame.raw.as_mut() {
+            crate::eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
         }
         self.emit_ip(frame, tick, events);
     }
