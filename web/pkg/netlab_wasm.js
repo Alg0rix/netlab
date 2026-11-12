@@ -830,6 +830,14 @@ export class NetLab {
         wasm.netlab_set_power(this.__wbg_ptr, id, on);
     }
     /**
+     * Host pacing hint — realtime ticks are wall milliseconds, simulation
+     * ticks are stepped. Probes space their sends to match.
+     * @param {boolean} rt
+     */
+    set_realtime(rt) {
+        wasm.netlab_set_realtime(this.__wbg_ptr, rt);
+    }
+    /**
      * @param {number} dev
      * @param {boolean} dhcp
      * @param {boolean} dns

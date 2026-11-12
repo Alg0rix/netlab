@@ -199,8 +199,8 @@ pub struct PingProbe {
     pub rtts: Vec<u64>,
     /// (launch tick, icmp seq) of the outstanding probe
     pub waiting: Option<(u64, u16)>,
-    /// next launch tick
-    pub next: u64,
+    /// launch tick of the most recent probe — paces the next send
+    pub last_sent: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -215,8 +215,13 @@ pub struct TraceProbe {
 
 pub const PING_PROBES: u8 = 5;
 /// Probe wait budget — sized so multi-hop paths (link delay × hops) still
-/// fit; the C4 header text always says "2 seconds".
+/// fit; the C4 header text always says "2 seconds". Stepped-mode value.
 pub const PROBE_TIMEOUT: u64 = 40;
+/// Realtime ticks are wall milliseconds, so two seconds is 2000 there.
+const PROBE_TIMEOUT_RT: u64 = 2000;
+/// Send-to-send probe cadence — the same spacing the old console job used.
+const PROBE_GAP_RT: u64 = 400;
+const PROBE_GAP_SIM: u64 = 30;
 pub const TRACE_MAX_HOPS: u8 = 30;
 
 impl Port {
@@ -908,7 +913,7 @@ impl Device {
             ok: 0,
             rtts: Vec::new(),
             waiting: None,
-            next: tick,
+            last_sent: 0,
         }));
     }
 
@@ -946,7 +951,6 @@ impl Device {
                 let rtt = tick - p.waiting.take().map(|(t, _)| t).unwrap_or(tick);
                 p.ok += 1;
                 p.rtts.push(rtt);
-                p.next = tick + 1;
                 events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, "!".into()));
             }
             Some(Probe::Trace(t))
@@ -997,7 +1001,6 @@ impl Device {
         match self.probe.as_mut() {
             Some(Probe::Ping(p)) if p.waiting.is_some() => {
                 p.waiting = None;
-                p.next = tick + 1;
                 events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, "U".into()));
             }
             Some(Probe::Trace(t)) if t.waiting.is_some() => {
@@ -1018,17 +1021,20 @@ impl Device {
     }
 
     /// Per-tick probe driver — launches probes, times them out, closes blocks.
-    pub fn poll_probe(&mut self, tick: u64, events: &mut Vec<SimEvent>) {
+    /// `rt` is the host's pacing flag: realtime ticks are wall milliseconds,
+    /// simulation ticks are stepped — the gaps track the display mode.
+    pub fn poll_probe(&mut self, tick: u64, rt: bool, events: &mut Vec<SimEvent>) {
         if !self.powered {
             self.probe = None;
             return;
         }
+        let gap = if rt { PROBE_GAP_RT } else { PROBE_GAP_SIM };
+        let timeout = if rt { PROBE_TIMEOUT_RT } else { PROBE_TIMEOUT };
         let launch = match self.probe.as_mut() {
             Some(Probe::Ping(p)) => {
                 if let Some((sent, _)) = p.waiting {
-                    if tick.saturating_sub(sent) >= PROBE_TIMEOUT {
+                    if tick.saturating_sub(sent) >= timeout {
                         p.waiting = None;
-                        p.next = tick + 1;
                         events.push(SimEvent::new(
                             tick,
                             self.id,
@@ -1038,10 +1044,14 @@ impl Device {
                         ));
                     }
                 }
-                if p.waiting.is_none() && tick >= p.next && p.sent < PING_PROBES {
+                if p.waiting.is_none()
+                    && p.sent < PING_PROBES
+                    && (p.sent == 0 || tick.saturating_sub(p.last_sent) >= gap)
+                {
                     self.probe_seq = self.probe_seq.wrapping_add(1);
                     let seq = self.probe_seq;
                     p.sent += 1;
+                    p.last_sent = tick;
                     p.waiting = Some((tick, seq));
                     Some((p.dst, 64, seq))
                 } else {
@@ -1050,7 +1060,7 @@ impl Device {
             }
             Some(Probe::Trace(t)) => {
                 if let Some((sent, _)) = t.waiting {
-                    if tick.saturating_sub(sent) >= PROBE_TIMEOUT {
+                    if tick.saturating_sub(sent) >= timeout {
                         t.waiting = None;
                         let hop = t.hop;
                         t.hop += 1;
@@ -1088,7 +1098,6 @@ impl Device {
                 match self.probe.as_mut() {
                     Some(Probe::Ping(p)) => {
                         p.waiting = None;
-                        p.next = tick + 1;
                         events.push(SimEvent::new(
                             tick,
                             self.id,

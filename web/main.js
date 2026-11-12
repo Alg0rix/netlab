@@ -223,6 +223,7 @@ function restore(data) {
   cable = null;
   try { lab.free(); } catch { /* already freed */ }
   lab = new NetLab();
+  lab.set_realtime(mode === 'realtime');
   simTick = 0;
 
   // The ONE decode site — .netlab.json, YAML, autosave, undo and templates
@@ -782,6 +783,7 @@ function setMode(m) {
     toast('Simulation pauses the network: running IOS/RouterOS/VM guests get no traffic until you press Play or switch back to Realtime.');
   }
   mode = m;
+  lab.set_realtime(m === 'realtime');
   playing = false;
   $$('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('#sim-ctl').classList.toggle('live', m === 'sim');

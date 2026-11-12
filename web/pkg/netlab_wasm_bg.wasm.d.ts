@@ -55,6 +55,7 @@ export const netlab_set_link_impair: (a: number, b: number, c: number, d: number
 export const netlab_set_link_up: (a: number, b: number, c: number) => void;
 export const netlab_set_nat: (a: number, b: number, c: number, d: number, e: number) => number;
 export const netlab_set_power: (a: number, b: number, c: number) => void;
+export const netlab_set_realtime: (a: number, b: number) => void;
 export const netlab_set_services: (a: number, b: number, c: number, d: number, e: number) => void;
 export const netlab_set_switchport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
 export const netlab_snapshot: (a: number, b: number) => void;

@@ -134,6 +134,11 @@ export class NetLab {
      */
     set_nat(dev: number, port: number, role: string): boolean;
     set_power(id: number, on: boolean): void;
+    /**
+     * Host pacing hint — realtime ticks are wall milliseconds, simulation
+     * ticks are stepped. Probes space their sends to match.
+     */
+    set_realtime(rt: boolean): void;
     set_services(dev: number, dhcp: boolean, dns: boolean, http: boolean): void;
     /**
      * `mode` is "access" or "trunk". `allowed` is "" / "all" or "1,10,20".
@@ -208,6 +213,7 @@ export interface InitOutput {
     readonly netlab_set_link_up: (a: number, b: number, c: number) => void;
     readonly netlab_set_nat: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly netlab_set_power: (a: number, b: number, c: number) => void;
+    readonly netlab_set_realtime: (a: number, b: number) => void;
     readonly netlab_set_services: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly netlab_set_switchport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly netlab_snapshot: (a: number, b: number) => void;

@@ -34,6 +34,9 @@ pub struct Topology {
     next_mac: u64,
     pub tick: u64,
     pub events: Vec<SimEvent>,
+    /// Host pacing hint — realtime ticks are wall milliseconds, simulation
+    /// ticks are stepped. Probes space their sends by this mode.
+    pub realtime: bool,
     rng: u32,
 }
 
@@ -54,6 +57,7 @@ impl Topology {
             next_mac: BASE_MAC,
             tick: 0,
             events: Vec::new(),
+            realtime: false,
             rng: 0xA5A5_1234,
         }
     }
@@ -238,11 +242,12 @@ impl Topology {
         self.tick += 1;
         let tick = self.tick;
         let ids: Vec<DeviceId> = self.devices.keys().copied().collect();
+        let rt = self.realtime;
         for id in ids {
             if let Some(d) = self.devices.get_mut(&id) {
                 crate::services::poll(d, tick, &mut self.events);
                 crate::ospf::tick(d, tick, &mut self.events);
-                d.poll_probe(tick, &mut self.events);
+                d.poll_probe(tick, rt, &mut self.events);
             }
         }
 

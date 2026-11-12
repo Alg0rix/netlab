@@ -280,6 +280,7 @@ const lastCall = (log, f) => labCall(log, f).at(-1);
 
 function driveRecord(rec) {
   const lab = new NetLab();
+  lab.set_realtime(false);
   try { return driveRecordOn(rec, lab); } finally { lab.free(); }
 }
 
@@ -466,6 +467,7 @@ for (const rec of records) {
 
 test('missing session maps to the deleted-node guard', t => {
   const lab = new NetLab();
+  lab.set_realtime(false);
   t.after(() => lab.free());
   const { dev, devs } = buildRig(lab, { kind: 'router', topo: 'single-router' });
   const devices = new Map(devs.map(d => [d.id, { name: d.name, kind: d.kind, powered: true }]));

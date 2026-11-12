@@ -262,6 +262,12 @@ impl NetLab {
         self.topo.traceroute(src, dst_ip)
     }
 
+    /// Host pacing hint — realtime ticks are wall milliseconds, simulation
+    /// ticks are stepped. Probes space their sends to match.
+    pub fn set_realtime(&mut self, rt: bool) {
+        self.topo.realtime = rt;
+    }
+
     /// ICMP echo with TTL. Used by traceroute.
     pub fn probe_ttl(&mut self, src: u32, dst_ip: &str, ttl: u8) -> bool {
         self.topo.ping_ttl(src, dst_ip, ttl)
