@@ -129,7 +129,7 @@ The last line is the prompt at the end of the case.
 `NETLAB_GOLDEN=write cargo test -p netlab-core --test cli` is the only way to write `.golden` files. Follow this routine:
 
 1. Edit the `.raw` file. Do not edit a `.golden` file.
-2. Run the command above. It writes every `.golden` file. It also writes `web/_test/corpus-steps.json`, a copy of every case for JavaScript-side checks. It skips that file if any case fails to run.
+2. Run the command above. It writes every `.golden` file. It also writes `web/_test/corpus-steps.json`, a copy of every case that the [JavaScript harness](#javascript-harness) replays. It skips that file if any case fails to run.
 3. Read the `git diff` of the `.golden` files. Each changed line must follow from your change. If a line changes and you cannot explain it, find the cause. Do not commit it.
 4. Run `cargo test -p netlab-core --test cli` without the variable. It must pass.
 
@@ -183,3 +183,52 @@ When the engine starts to accept the command, the line changes the device or suc
 3. Regenerate the `.golden` files and review the diff.
 
 A check in `properties.rs` also requires that every deferred keyword in the runner's list appears in at least one gap-marked line with the matching tag. When you add a keyword to that list, add a gap-marked line for it. When a feature ships, remove its keyword from the list in the same change.
+
+## JavaScript harness
+
+The cases also run in Node.js against the browser code. The harness lives in `web/_test/`. It checks that the web console (`web/cli.js`) drives the compiled WebAssembly engine in the same way as the Rust runner.
+
+```text
+node --test web/_test/   → run the harness (no install step)
+```
+
+The harness loads the prebuilt `web/pkg/` module. After you change the Rust code, run `make wasm` first. Otherwise the harness tests the old engine.
+
+### Files
+
+| File | Content |
+|---|---|
+| `corpus-steps.json` | One record per case: `id`, `src-sha`, `masks`, `steps`, and `frames`. `frames` is the expected transcript, with masks applied. |
+| `rigs.mjs` | One entry per case id: `kind`, `topo`, `tick`, `ifmap`, and `startup`. It builds the fixture topology through the WebAssembly exports. |
+| `frames.mjs` | Turns the engine output into the same frame lines as the Rust runner. It also applies masks and checks gap markers. |
+| `spy.test.mjs` | The tests. |
+
+The harness reads only `corpus-steps.json`. It never reads `.raw` or `.golden` files. It never writes `corpus-steps.json`. Only the Rust command in [Regenerating](#regenerating) writes it.
+
+The record has no header fields. When you add a case, add its entry to `rigs.mjs` too. A case with no entry fails.
+
+### What it checks
+
+Each record runs through the real `SimShell` with a recording host. Calls to the engine go through a proxy that logs them in order. For every record, the harness checks these points:
+
+- **Checkpoint order.** Exactly one undo checkpoint comes before each `cli_exec` or `cli_script` call. Steps that cannot change the device (`## key:`, `## tick:`, `## drain`) push no checkpoint and do not refresh or mark the lab dirty.
+- **Effects.** The refresh and dirty calls match the `mutated` flag of the result. Each request for the host reaches its channel. `reload` resets the configuration and restores power. `nvram-write` and `nvram-erase` update the startup text. `rename` renames the node. `ping` and `trace` start a probe.
+- **Console output.** The spans that the shell writes to the console match the engine output, in order.
+- **Frame parity.** The harness renders the engine output into frames. It compares them line by line with the `frames` of the record. This is the same transcript that the `.golden` file holds.
+- **Events.** No event waits undrained at the end of a case, unless the case has `## allow-events`.
+
+Two more tests cover a deleted node, which must print `% node was deleted`, and the harness itself. The self-test breaks the ordering, the frames, and the masks on purpose and expects each break to fail.
+
+### Relation to the Rust runner
+
+The Rust runner is the only place that parses `.raw` files and defines the grammar. The Rust test compares the engine with the `.golden` file. The JavaScript harness compares the adapter and the compiled engine with the same frames. A case passes in both places or the two sides disagree.
+
+### Pinned divergence
+
+One case differs between the two sides. The Rust runner uses one session for the whole case. After a confirmed `reload`, that session stays in privileged mode. The web console replays the saved configuration after a reload. Its session returns to user mode.
+
+In `c06-pending-dialogs`, the last `reload` line shows the prompt `R#` in the transcript and `R>` in the browser. The map `KNOWN_DIVERGENCES` in `spy.test.mjs` pins this one difference:
+
+- The test accepts a mismatch only if it is that line, with those two prompts.
+- Any other mismatch in the case fails the test.
+- If the two sides agree, the test fails. Remove the pin and compare the whole record.

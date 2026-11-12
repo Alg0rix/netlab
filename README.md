@@ -304,6 +304,12 @@ Run the Rust simulation core test suite (covering L2 learning, L3 static routing
 cargo test -p netlab-core
 ```
 
+Run the JavaScript tests. They replay the CLI transcript cases against the web console and the prebuilt `web/pkg/` module. Run `make wasm` first if you changed the Rust code. See [`docs/corpus.md`](docs/corpus.md#javascript-harness).
+
+```sh
+node --test web/_test/
+```
+
 ---
 
 ## Third-Party Notices

@@ -1,0 +1,6 @@
+{
+  "name": "netlab-web-test",
+  "private": true,
+  "type": "module",
+  "main": "./spy.test.mjs"
+}
