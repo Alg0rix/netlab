@@ -261,29 +261,6 @@ const mismatchError = (id, m, got, want) => {
   return new Error(`${id}: first frame mismatch at index ${m.i} (${got.length} vs ${want.length})\n${ctx.join('\n')}`);
 };
 
-// corpus-steps.json predates the adapter rewrite (committed at 45210c2,
-// cli.js at 0e7e1ee). The runner's single-session model never replays the
-// reload arm — reset_config + cli_set_startup + gated cli_script — so its
-// post-`!intent reload` frames keep the PrivExec seat the wasm session
-// cannot hold through reset_config. The pin carries the adapter's full
-// expected tail from the first mismatch onward, so text drift and frame-count
-// drift both fail. It also fails loud if the upstream corpus is regenerated
-// against an adapter-aware runner or the adapter's reload path changes seat
-// semantics.
-const KNOWN_DIVERGENCES = {
-  'c06-pending-dialogs': {
-    first: { got: 'R> reload', want: 'R# reload' },
-    tail: [
-      'R> reload',
-      'Translating "reload" ...domain server (255.255.255.255)',
-      '!err % Unknown command or computer name, or unable to find computer address',
-      '## key: ctrlz',
-      '!prompt R>',
-      '!prompt R>',
-    ],
-  },
-};
-
 const RECORD_IDS = [
   'c01-modes-ladder', 'c02-triad-invalid', 'c03-triad-incomplete', 'c04-triad-ambiguous',
   'c05-abbrev-ifname', 'c06-pending-dialogs', 'c07-pending-field', 'c08-no-forms',
@@ -295,29 +272,24 @@ const RECORD_IDS = [
 
 function assertFrames(id, got, want) {
   const m = firstMismatch(got, want);
-  const pin = KNOWN_DIVERGENCES[id];
-  if (!m) {
-    if (pin) throw new Error(`${id}: parity reached — the known divergence closed; drop the pin and assert the whole record`);
-    return;
-  }
-  if (pin && m.got === pin.first.got && m.want === pin.first.want) {
-    assert.deepStrictEqual(got.slice(m.i), pin.tail, `${id}: adapter tail from index ${m.i} drifted from the pin`);
-    return;
-  }
-  throw mismatchError(id, m, got, want);
+  if (m) throw mismatchError(id, m, got, want);
 }
 
 const labCall = (log, f) => log.filter(c => c.f === f);
 const lastCall = (log, f) => labCall(log, f).at(-1);
 
 function driveRecord(rec) {
+  const lab = new NetLab();
+  try { return driveRecordOn(rec, lab); } finally { lab.free(); }
+}
+
+function driveRecordOn(rec, lab) {
   const id = rec.id;
   const fail = msg => { throw new Error(`${id}: ${msg}`); };
   if (!Array.isArray(rec.steps) || rec.steps.length === 0) fail('record carries zero steps');
   if (!Array.isArray(rec.frames)) fail('record carries no frames array');
   const rig = RECORD_RIGS[id];
   if (!rig) fail(`no rig entry for record`);
-  const lab = new NetLab();
   const { dev, devs } = buildRig(lab, rig);
   const devices = new Map(devs.map(d => [d.id, { name: d.name, kind: d.kind, powered: true }]));
   const meta = new Map();
@@ -334,6 +306,8 @@ function driveRecord(rec) {
 
   const frames = [];
   let armed = false;
+  let probeJob = false;
+  let probeMuted = false;
   let allowEvents = false;
   let bellsSeen = 0;
   const fire = ev => input.listeners.keydown?.({ preventDefault() {}, currentTarget: input, target: input, ...ev });
@@ -347,7 +321,7 @@ function driveRecord(rec) {
     const where = `${id} step ${si}`;
     const cm = calls.length;
     const wm = writes.length;
-    const ctx = { dev, bells: 0, probeCalls: [], replay: null, probeMuted: shell.probeMuted, evs: null };
+    const ctx = { dev, bells: 0, probeCalls: [], replay: null, probeMuted, evs: null };
     if (st.t === 'exec' || st.t === 'gap') {
       if (st.t === 'gap') frames.push({ text: `## gap: ${st.fr}${st.tok != null ? ` tok${st.tok}` : ''}`, scope: 'bare' });
       const p = shell.promptText ?? '';
@@ -358,6 +332,7 @@ function driveRecord(rec) {
       ctx.result = r;
       const log = calls.slice(cm);
       ctx.probeCalls = labCall(log, 'lab.ping').concat(labCall(log, 'lab.traceroute')).map(c => c.r);
+      if (ctx.probeCalls.length) { probeJob = ctx.probeCalls.at(-1) === true; probeMuted = false; }
       const replayCalls = labCall(log, 'lab.cli_script');
       if (replayCalls.length) ctx.replay = replayCalls.at(-1).r;
       checkOrdering(id, 'exec', log);
@@ -373,6 +348,8 @@ function driveRecord(rec) {
       const r = shell.paste(st.text);
       ctx.result = r;
       const log = calls.slice(cm);
+      const pcs = labCall(log, 'lab.ping').concat(labCall(log, 'lab.traceroute')).map(c => c.r);
+      if (pcs.length) { probeJob = pcs.at(-1) === true; probeMuted = false; }
       checkOrdering(id, 'script', log);
       checkEffects(id, st.t, log, r, intentsOf(r.out));
       frames.push(...opFrames(r.out));
@@ -425,6 +402,7 @@ function driveRecord(rec) {
         frames.push(...opFrames(key.r.out));
         frames.push(promptFrame(key.r.prompt, key.r.pending != null));
         armed = key.r.pending != null;
+        if (st.op === 'ctrlc' && probeJob) { probeMuted = true; probeJob = false; }
         if (shell.pending !== armed) fail(`${where} adapter pending flag diverged`);
         if (shell.promptText !== key.r.prompt) fail(`${where} promptText diverged from key prompt`);
       } else {
@@ -486,8 +464,9 @@ for (const rec of records) {
   test(rec.id, () => driveRecord(rec));
 }
 
-test('missing session maps to the deleted-node guard', () => {
+test('missing session maps to the deleted-node guard', t => {
   const lab = new NetLab();
+  t.after(() => lab.free());
   const { dev, devs } = buildRig(lab, { kind: 'router', topo: 'single-router' });
   const devices = new Map(devs.map(d => [d.id, { name: d.name, kind: d.kind, powered: true }]));
   const meta = new Map([[dev, {}]]);

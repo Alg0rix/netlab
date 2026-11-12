@@ -68,10 +68,10 @@ Dialogs take over the prompt until you answer. A dialog sees every line you type
 
 | Command | Prompt | Answers |
 |---|---|---|
-| `copy running-config startup-config` | `Destination filename [startup-config]? ` | Any answer, or a blank line, confirms. The engine ignores the typed text. It does not accept another file name. |
+| `copy running-config startup-config` | `Destination filename [startup-config]? ` | A blank line or `startup-config` confirms. Any other name prints `%Error opening nvram:<name> (No such file or directory)`. |
 | `write erase`, `erase startup-config` | `Erasing the nvram filesystem will remove all configuration files! Continue? [confirm] ` | `y`, `yes`, or a blank line erases. `n` or `no` cancels without output. Other input asks again. |
-| `reload` | `System configuration has been modified. Save? [yes/no]: ` | `y` or blank saves, then asks `Proceed with reload? [confirm] `. `n` skips the save and asks the same question. |
-| (reload, second step) | `Proceed with reload? [confirm] ` | `y`, `yes`, or blank reloads. `n` or `no` cancels. |
+| `reload` | `System configuration has been modified. Save? [yes/no]: ` | `y`, `yes`, or a blank line saves, then asks `Proceed with reload? [confirm] `. `n` or `no` skips the save and asks the same question. Other input asks again. |
+| (reload, second step) | `Proceed with reload? [confirm] ` | `y`, `yes`, or a blank line reloads. `n` or `no` cancels. Other input asks again. |
 
 `show startup-config` prints the saved text. With nothing saved, it prints `%% Non-volatile configuration memory is not present`.
 
@@ -145,7 +145,7 @@ A reload does these things in order:
 
 Changes you did not save with `write memory` vanish at reload. The autosave keeps the lab in the browser, but it does not change the startup script.
 
-When a script line fails, the console shows a message with the first three failures as `line N: message`. The remaining lines still run.
+When a script line fails, the console prints each failure as `line N: message`. The remaining lines still run. A script that runs at node start or lab open reports its failures as a toast that names the first three.
 
 ## Command reference
 

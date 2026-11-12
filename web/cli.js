@@ -19,11 +19,6 @@ const TRIAD = "% Invalid input detected at '^' marker.";   // pinned constant
 const GUARD = '% node was deleted';
 const reducedMotion = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-// impl-stage engine switch — the final wave removes this read; SimShell is
-// the only adapter path either way. Domain: "legacy"|"core", default "core".
-export const cliEngine = () =>
-  globalThis.localStorage?.getItem('netlab.pref.cli.engine') ?? 'core';
-
 // The ONLY Err the cli_* wire documents is the missing-session family —
 // anchored so nothing else maps to the guard; any other throw is a seam
 // defect and dies loud.

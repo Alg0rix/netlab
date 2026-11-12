@@ -199,36 +199,30 @@ The harness loads the prebuilt `web/pkg/` module. After you change the Rust code
 | File | Content |
 |---|---|
 | `corpus-steps.json` | One record per case: `id`, `src-sha`, `masks`, `steps`, and `frames`. `frames` is the expected transcript, with masks applied. |
-| `rigs.mjs` | One entry per case id: `kind`, `topo`, `tick`, `ifmap`, and `startup`. It builds the fixture topology through the WebAssembly exports. |
+| `rigs.mjs` | One entry per case id: `kind`, `topo`, `tick`, `ifnames`, and `startup`. It builds the fixture topology through the WebAssembly exports. |
 | `frames.mjs` | Turns the engine output into the same frame lines as the Rust runner. It also applies masks and checks gap markers. |
 | `spy.test.mjs` | The tests. |
 
 The harness reads only `corpus-steps.json`. It never reads `.raw` or `.golden` files. It never writes `corpus-steps.json`. Only the Rust command in [Regenerating](#regenerating) writes it.
 
-The record has no header fields. When you add a case, add its entry to `rigs.mjs` too. A case with no entry fails.
+The record has no header fields. When you add a case, add its entry to `rigs.mjs` and its id to `RECORD_IDS` in `spy.test.mjs`. A case with no entry fails.
 
 ### What it checks
 
 Each record runs through the real `SimShell` with a recording host. Calls to the engine go through a proxy that logs them in order. For every record, the harness checks these points:
 
-- **Checkpoint order.** Exactly one undo checkpoint comes before each `cli_exec` or `cli_script` call. Steps that cannot change the device (`## key:`, `## tick:`, `## drain`) push no checkpoint and do not refresh or mark the lab dirty.
-- **Effects.** The refresh and dirty calls match the `mutated` flag of the result. Each request for the host reaches its channel. `reload` resets the configuration and restores power. `nvram-write` and `nvram-erase` update the startup text. `rename` renames the node. `ping` and `trace` start a probe.
+- **Checkpoint order.** Exactly one undo checkpoint comes before each `cli_exec` or `cli_script` call. Steps that cannot change the device (`## key:`, `## tick:`, `## drain`, `## allow-events`) push no checkpoint and do not refresh or mark the lab dirty.
+- **Effects.** A `mutated` result adds one refresh and one dirty mark. Each request for the host reaches its channel and adds its own mark: `reload` resets the configuration, restores power, and refreshes once more. `nvram-write` and `nvram-erase` update the startup text and mark the lab dirty. A startup replay that mutates the device marks it dirty again. `rename` renames the node. `ping` and `trace` start a probe.
 - **Console output.** The spans that the shell writes to the console match the engine output, in order.
 - **Frame parity.** The harness renders the engine output into frames. It compares them line by line with the `frames` of the record. This is the same transcript that the `.golden` file holds.
 - **Events.** No event waits undrained at the end of a case, unless the case has `## allow-events`.
 
-Two more tests cover a deleted node, which must print `% node was deleted`, and the harness itself. The self-test breaks the ordering, the frames, and the masks on purpose and expects each break to fail.
+Three more tests stand beside the records. One checks the record set: the ids c01 to c20, the steps and frames arrays, and a `rigs.mjs` entry per record. One covers a deleted node, which must print `% node was deleted` and refuse further input. The self-test breaks the ordering, the frames, and the masks on purpose and expects each break to fail.
 
 ### Relation to the Rust runner
 
 The Rust runner is the only place that parses `.raw` files and defines the grammar. The Rust test compares the engine with the `.golden` file. The JavaScript harness compares the adapter and the compiled engine with the same frames. A case passes in both places or the two sides disagree.
 
-### Pinned divergence
+### Reload semantics
 
-One case differs between the two sides. The Rust runner uses one session for the whole case. After a confirmed `reload`, that session stays in privileged mode. The web console replays the saved configuration after a reload. Its session returns to user mode.
-
-In `c06-pending-dialogs`, the last `reload` line shows the prompt `R#` in the transcript and `R>` in the browser. The map `KNOWN_DIVERGENCES` in `spy.test.mjs` pins this one difference:
-
-- The test accepts a mismatch only if it is that line, with those two prompts.
-- Any other mismatch in the case fails the test.
-- If the two sides agree, the test fails. Remove the pin and compare the whole record.
+On `!intent reload` the Rust runner performs the same session steps as the web console. The device returns to its authored baseline and keeps its live power state. The stored startup text mirrors back into the session, and the session seat drops to user mode (`R>`). A `## startup:` block then replays through `cli.script` — a `startup` field on the rig entry turns **Apply on start** on, so the replay runs. The transcript models the production path, so the two sides compare line by line with no exceptions.

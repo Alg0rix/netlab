@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use netlab_core::cli::types::{CompleteResult, HelpResult, Op, OpCls};
-use netlab_core::cli::{sep, Cli, IfMap};
-use netlab_core::{DeviceId, DeviceKind, SimEvent, Topology};
+use netlab_core::cli::{sep, Cli, IfMap, ModeCtx, ModeId};
+use netlab_core::{Device, DeviceId, DeviceKind, SimEvent, Topology};
 
 use crate::fixtures::{self, TopoId};
 
@@ -748,9 +748,38 @@ fn check_gap(
     Ok(())
 }
 
+/// The reload arm the adapter performs on Intent::Reload — the device
+/// returns to its authored baseline keeping the live powered flag, the
+/// session seat drops to Exec with no dialog, the stored startup text is
+/// mirrored back, and a carried startup replays through cli.script.
+fn apply_reload(
+    topo: &mut Topology,
+    cli: &mut Cli,
+    dev: DeviceId,
+    base: &Device,
+    startup: Option<&str>,
+) {
+    let was_powered = topo.devices[&dev].powered;
+    let tick = topo.tick;
+    topo.devices
+        .get_mut(&dev)
+        .expect("session device")
+        .restore_baseline(base, tick);
+    topo.set_power(dev, was_powered);
+    cli.pending = None;
+    cli.node = ModeId::Exec;
+    cli.ctx = ModeCtx::default();
+    cli.startup_text = startup.map(str::to_string);
+    if let Some(text) = startup {
+        let d = topo.devices.get_mut(&dev).expect("session device");
+        cli.script(d, text, topo.tick, &mut topo.events);
+    }
+}
+
 pub fn run_case(case: &Case) -> Result<Vec<Frame>, String> {
     let (mut topo, dev) = fixtures::build(case.topo, case.kind)?;
     topo.tick = case.tick;
+    let baseline = topo.devices[&dev].clone();
     let names = match &case.ifmap {
         Some(n) => n.clone(),
         None => topo.devices[&dev].port_names(),
@@ -787,7 +816,14 @@ pub fn run_case(case: &Case) -> Result<Vec<Frame>, String> {
                     check_gap(g, line, &prompt, &r.out, r.mutated)
                         .map_err(|m| format!("{}: {m}", case.id))?;
                 }
+                let reload = r
+                    .out
+                    .iter()
+                    .any(|op| matches!(op, Op::Intent(netlab_core::Intent::Reload)));
                 frames.extend(op_frames(r.out));
+                if reload {
+                    apply_reload(&mut topo, &mut cli, dev, &baseline, case.startup.as_deref());
+                }
             }
             Step::Script(text) => {
                 frames.push(f("## script", Scope::Bare));
@@ -795,11 +831,18 @@ pub fn run_case(case: &Case) -> Result<Vec<Frame>, String> {
                     let d = topo.devices.get_mut(&dev).expect("session device");
                     cli.script(d, text, topo.tick, &mut topo.events)
                 };
+                let reload = r
+                    .out
+                    .iter()
+                    .any(|op| matches!(op, Op::Intent(netlab_core::Intent::Reload)));
                 frames.extend(op_frames(r.out));
                 for e in &r.errors {
                     frames.push(f(format!("!error {} {}", e.lineno, e.msg), Scope::Engine));
                 }
                 frames.push(f("## endscript", Scope::Bare));
+                if reload {
+                    apply_reload(&mut topo, &mut cli, dev, &baseline, case.startup.as_deref());
+                }
             }
             Step::Key { op, text } => {
                 let replay = match op {

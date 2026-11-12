@@ -3,7 +3,7 @@ import { IOSNode, iosArgs, detectIosPlatform } from './ios.js';
 import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
 import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame, tcpFlow } from './capture.js';
-import { SimShell, cliEngine, isMissingSession, parse_event } from './cli.js';
+import { SimShell, isMissingSession, parse_event } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
 import { emitLab, parseLab, decodeLab, encodeNode, applySeats } from './labyaml.js';
 import { toast, modal, confirmBox, ask, openMenu, closeMenu, ico, hydrateIcons } from './ui.js';
@@ -3203,9 +3203,6 @@ function simConsole(id) {
     rename: (i, n) => rename(i, n),
     checkpoint,
   };
-  // impl-stage engine switch — "legacy"|"core", default "core"; the cutover
-  // wave deletes the read. The legacy seat is gone with the monolith.
-  if (cliEngine() !== 'core') toast('cli.engine "legacy" has no path — the core adapter is the only shell', 'err');
   const shell = new SimShell({ app, meta, get lab() { return lab; } }, id, t.write);
   t.bar.innerHTML = `<span>${esc(byId.get(id).name)} · ${esc(tpl(tplOf(id)).label)} shell</span><span class="spacer"></span><button class="btn sm" data-clear>${ico('trash')}Clear</button>`;
   $('[data-clear]', t.bar).onclick = () => t.write('\x0c');

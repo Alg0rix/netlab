@@ -112,7 +112,7 @@ The engine does not run intents. The host application does. After it handles the
 | `"rename"` | `name` | Rename the device. |
 | `"nvram-write"` | `text` | Store the text as the saved startup configuration. |
 | `"nvram-erase"` | none | Erase the saved startup configuration. |
-| `"reload"` | none | Reload the device. Read the power state, call `reset_config`, restore the power state with `set_power`, then replay the saved startup text with `cli_script`. |
+| `"reload"` | none | Reload the device. Read the power state, call `reset_config`, restore the power state with `set_power`, mirror the saved text with `cli_set_startup`, then replay it with `cli_script` when the node's Apply-on-start flag is on. |
 
 The session already updates its own startup text on `write memory` and `write erase`. The `nvram-*` intents tell the host application to persist the same change.
 

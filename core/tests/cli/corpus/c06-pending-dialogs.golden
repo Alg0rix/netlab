@@ -53,7 +53,9 @@ R# reload
 System configuration has been modified. Save? [yes/no]: n
 Proceed with reload? [confirm] yes
 !intent reload
-R# reload
+R> reload
+Translating "reload" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
 ## key: ctrlz
-!prompt R#
-!prompt R#
+!prompt R>
+!prompt R>

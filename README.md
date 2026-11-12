@@ -211,7 +211,9 @@ router ospf <pid>  ->  network <net> <wildcard> area <n> | router-id <ip>
 vlan <id>  ->  name <word> | state active|suspend
 ```
 
-Static routes beat OSPF when the prefix length is the same. A longer OSPF prefix still wins. Connected routes always win. OSPF routes are not written back as `ip route`.
+The longest prefix wins. At the same length, a connected route beats a static route and a static route beats OSPF. OSPF routes are not written back as `ip route`.
+
+The grammar rejects commands outside this surface with the standard IOS errors. Named ACLs, `ip dhcp pool`, `terminal length 0`, and extended `ping` options are in the [unsupported list](docs/cli.md#unsupported-commands).
 
 ### Saving and reloading
 

@@ -2,6 +2,7 @@
 
 wasm:
 	cd wasm && wasm-pack build --target web --out-dir ../web/pkg
+	node -e 'const fs=require("fs"),p="web/pkg/package.json",j=JSON.parse(fs.readFileSync(p,"utf8"));j.type="module";fs.writeFileSync(p,JSON.stringify(j,null,2))'
 
 serve:
 	cd web && python3 serve.py 8471
