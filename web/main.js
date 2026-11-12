@@ -771,6 +771,8 @@ setInterval(pump, 4);
 
 let evDirty = false, capDirty = false, slowT = 0;
 function frame(now) {
+  // Re-arm before the body — a render exception must not freeze the canvas.
+  requestAnimationFrame(frame);
   draw(now);
   if (P.minimap) drawMinimap();
   if (now - slowT > 200) {
@@ -783,7 +785,6 @@ function frame(now) {
     renderTopo();
     renderInspectorSoon();
   }
-  requestAnimationFrame(frame);
 }
 
 function stepOnce() {
@@ -2358,8 +2359,8 @@ function nodeInspector(id) {
   }
 
   // tables
-  if (!isExt && (d.arp.length || isSw)) {
-    const rows = isSw ? d.macs.map(([m, p, v]) => [m, `${ifName(id, p)}  vlan ${v ?? ''}`]) : d.arp;
+  if (!isExt && (d.arp_table.length || isSw)) {
+    const rows = isSw ? d.mac_table.map(m => [m.mac, `${ifName(id, m.port)}  vlan ${m.vlan}`]) : d.arp_table.map(a => [a.ip, a.mac]);
     const s = h(`<div class="sect"><h4>${isSw ? 'MAC address table' : 'ARP cache'}<span class="spacer"></span><span class="muted mono" style="text-transform:none;letter-spacing:0">${rows.length}</span></h4>
       ${rows.length ? `<table class="tbl-mini">${rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join('')}</table>` : '<div class="empty-note">Empty — send some traffic.</div>'}</div>`);
     root.append(s);
@@ -2458,7 +2459,7 @@ function servicesSection(id, d) {
     <p class="muted" style="margin:8px 0 0;font-size:12px">DHCP answers Discover on a connected interface. DNS answers its A records, or this host's address for any other name. HTTP replies <span class="mono">netlab</span>.</p>
     ${d.svc_dns ? `<div class="row" style="margin-top:8px"><input class="field" data-n placeholder="lab.local" /><input class="field" data-ip placeholder="10.1.0.9" /><button class="btn sm" data-add>A record</button></div>
       <ul class="routes">${(d.dns_records || []).map(([n, ip]) => `<li><span>${esc(n)} → ${esc(ip)}</span></li>`).join('') || ''}</ul>` : ''}
-    ${d.dhcp ? `<p style="margin:8px 0 0">DHCP client: <span class="mono">${esc(d.dhcp)}</span>${d.resolver ? ` · DNS ${esc(d.resolver)}` : ''}</p>` : ''}
+    ${d.dhcp_client ? `<p style="margin:8px 0 0">DHCP client: <span class="mono">${esc(d.dhcp_client)}</span>${d.resolver ? ` · DNS ${esc(d.resolver)}` : ''}</p>` : ''}
   </div>`);
   const apply = () => {
     checkpoint();
