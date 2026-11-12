@@ -78,6 +78,7 @@ const conPlace = new Map();  // devId -> 'dock' when its console lives in the bo
 let dockTab = 'events';
 
 const flashes = [];          // { dev, color, t0 }
+const trails = new Map();    // 'link:dir:proto' -> packet dot that keeps gliding between snapshot sights
 let C = {};                  // resolved CSS colours
 
 const WALL_TICK = 70;        // real ms per tick at 1× — animation pace
@@ -971,6 +972,7 @@ function draw(now) {
 
   // links
   const running = id => nodeState(id) === 'running';
+  const msPerTick = mode === 'realtime' ? 1 : WALL_TICK / (speed || 1);
   for (const l of snap.links) {
     const a = byId.get(l.a), b = byId.get(l.b);
     if (!a || !b) continue;
@@ -1020,21 +1022,43 @@ function draw(now) {
       ctx.fillStyle = C.bad; ctx.globalAlpha = .55 + .45 * Math.sin(now / 250);
       ctx.beginPath(); ctx.arc(mx, my, 3.5, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
     }
-    // packets in flight, interpolated between ticks
+    // packets in flight — sightings seed trail particles drawn below.
+    // A realtime transit is shorter than the 15 ms snapshot cadence, so a
+    // bare l.frames dot flickers invisibly; the trail keeps gliding.
+    const dur = Math.max(320, (l.delay || 4) * msPerTick);
     for (const f of l.frames) {
       const t = clamp(f.t + f.dir * tickFrac / (l.delay || 4), 0, 1);
-      const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
-      const proto = ({ arp: 'ARP', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', dhcp: 'DHCP', dns: 'DNS', ospf: 'OSPF', vlan: 'VLAN', stp: 'STP' })[f.color] || 'ETH';
-      const col = C['p-' + (f.color || 'ext')] || C['p-ext'];
-      if (view.z < .55) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); continue; }
-      ctx.font = `700 9.5px ${getMono()}`;
-      const w = ctx.measureText(proto).width + 12;
-      ctx.shadowColor = col; ctx.shadowBlur = 10;
-      ctx.fillStyle = col; roundRect(ctx, x - w / 2, y - 8, w, 16, 5); ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = '#0b0e13'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(proto, x, y + .5);
+      const k = `${l.id}:${f.dir}:${f.color || 'ext'}`;
+      const tr = trails.get(k);
+      const disp = tr ? (mode === 'realtime' ? tr.t0 + tr.dir * (now - tr.at0) / dur : tr.t) : 0;
+      if (!tr || tr.dir * (disp - t) > 0.25) trails.set(k, { link: l.id, dir: f.dir, color: f.color, t0: t, at0: now, t, last: now });
+      else { tr.t = t; tr.last = now; if (tr.dir * (t - tr.t0) > 0.02) { tr.t0 = t; tr.at0 = now; } }
     }
+  }
+
+  // packet trails — glide at the link's transit pace, floored so realtime
+  // hops stay on screen long enough to read as flow
+  while (trails.size > 240) trails.delete(trails.keys().next().value);
+  for (const [k, tr] of trails) {
+    const l = snap.links.find(x => x.id === tr.link);
+    const a = l && byId.get(l.a), b = l && byId.get(l.b);
+    if (!a || !b) { trails.delete(k); continue; }
+    const dur = Math.max(320, (l.delay || 4) * msPerTick);
+    if (now - tr.last > (mode === 'realtime' ? dur + 160 : 80)) { trails.delete(k); continue; }
+    const q = mode === 'realtime' ? tr.t0 + tr.dir * (now - tr.at0) / dur : tr.t;
+    const t = clamp(q, 0, 1);
+    const ax = a.x, ay = a.y + ICON_DY, bx = b.x, by = b.y + ICON_DY;
+    const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+    const proto = ({ arp: 'ARP', icmp: 'ICMP', tcp: 'TCP', udp: 'UDP', dhcp: 'DHCP', dns: 'DNS', ospf: 'OSPF', vlan: 'VLAN', stp: 'STP' })[tr.color] || 'ETH';
+    const col = C['p-' + (tr.color || 'ext')] || C['p-ext'];
+    if (view.z < .55) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill(); continue; }
+    ctx.font = `700 9.5px ${getMono()}`;
+    const w = ctx.measureText(proto).width + 12;
+    ctx.shadowColor = col; ctx.shadowBlur = 10;
+    ctx.fillStyle = col; roundRect(ctx, x - w / 2, y - 8, w, 16, 5); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#0b0e13'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(proto, x, y + .5);
   }
 
   // link being drawn
