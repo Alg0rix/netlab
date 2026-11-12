@@ -32,7 +32,10 @@ Two inputs are programming errors. They throw a JavaScript exception instead of 
 | `cli_set_ifnames(dev, names)` | nothing | Register the device's interface names, in port order. |
 | `cli_set_startup(dev, text)` | nothing | Set the saved startup text. Pass `null` for "nothing saved". |
 | `baseline_commit(dev)` | nothing | Snapshot the device config as the authored baseline. Call it after the lab document has applied one node. |
+| `apply_device_fields(dev, fields)` | nothing | Apply the codec seat object the lab document carries. See [apply_device_fields](#apply_device_fields). |
 | `reset_config(dev)` | nothing | Replay target for a reload. See [reset_config](#reset_config). |
+| `ping(dev, ip)` | boolean | Arm a ping job. Call it for the `"ping"` intent. |
+| `traceroute(dev, ip)` | boolean | Arm a traceroute job. Call it for the `"trace"` intent. |
 
 Call `cli_set_ifnames` before the first command that names an interface. Pass the device's port names in declared order.
 
@@ -104,18 +107,50 @@ The engine does not run intents. The host application does. After it handles the
 
 | `kind` | Extra fields | Host action |
 |---|---|---|
-| `"ping"` | `target` | Start a ping to the address. |
-| `"trace"` | `target` | Start a traceroute to the address. |
+| `"ping"` | `target` | Call `ping(dev, target)`. See [Probes](#probes). |
+| `"trace"` | `target` | Call `traceroute(dev, target)`. See [Probes](#probes). |
 | `"rename"` | `name` | Rename the device. |
 | `"nvram-write"` | `text` | Store the text as the saved startup configuration. |
 | `"nvram-erase"` | none | Erase the saved startup configuration. |
-| `"reload"` | none | Reload the device. Call `reset_config`, then replay the saved startup text with `cli_script`. |
+| `"reload"` | none | Reload the device. Read the power state, call `reset_config`, restore the power state with `set_power`, then replay the saved startup text with `cli_script`. |
 
 The session already updates its own startup text on `write memory` and `write erase`. The `nvram-*` intents tell the host application to persist the same change.
+
+## Probes
+
+`ping(dev, ip)` and `traceroute(dev, ip)` arm one probe job on the device. Both return `true` when the job starts. They return `false` when the device does not exist, the device is powered off, or the address is not a valid IPv4 address. A `false` result is not an error value. Print your own message, such as `could not send probe`.
+
+The probe replies arrive as simulation events. Read them with `drain_events()` after each `tick()`. Events of kind `ping` and `trace` carry the reply text for the console.
+
+`probe_ttl(dev, ip, ttl)` sends one silent ICMP echo with a chosen TTL and emits no probe events. The `"trace"` intent does not need it. Use it to build your own probe loop.
 
 ## Simulation events
 
 `cli_exec` and `cli_script` put simulation events in the topology event queue. Read them with `drain_events()`. `cli_key` discards events.
+
+## apply_device_fields
+
+`apply_device_fields(dev, fields)` applies one node's lab-document seats in a single call. `fields` is a JSON object. `web/labyaml.js` builds it from the decoded node; call this export inside the decode loop, before `baseline_commit(dev)`.
+
+```json
+{
+  "ports": [{ "index": 0, "admin_up": true, "method": "manual", "stats": { "rx": 42 } }],
+  "routes": [{ "prefix": "10.9.0.0", "mask": "255.255.255.0", "next_hop": "10.0.0.2", "out_port": 0, "ad": 1, "metric": 0, "learned_tick": 0 }],
+  "mac": [{ "mac": "aabb.ccdd.eeff", "port": 2, "vlan": 10, "created_tick": 4, "etype": "static" }],
+  "arp": [{ "ip": "10.0.0.9", "mac": "1122.3344.5566", "port": 0, "created_tick": 5, "etype": "static" }],
+  "vlans": { "10": { "name": "users", "state": "suspend" } },
+  "toggles": { "directed_broadcast": true },
+  "ospf": { "pid": 7, "router_id": "9.9.9.9", "networks": [{ "net": "10.0.0.0", "wild": "0.0.0.255", "area": 2 }] }
+}
+```
+
+- Every field is optional. An unknown key is an error, not a silent skip.
+- `routes` carries static routes only. `ad`, `metric`, and `learned_tick` keep the authored values.
+- Seat application is config, not runtime effect: `admin_up`, `method`, and `stats` write fields directly and emit no link events. Routes, vlans, toggles, and OSPF ride the same kind-gated setters the CLI uses, so a wrong-kind seat skips. A host keeps its authored default route.
+- `ospf.router_id` may be `null`: the router then derives its ID. A string marks the ID as explicit.
+- `toggles.routing_enabled` is a constructor capability. The call never rewrites it.
+- A malformed `fields` string is a programming error and returns `netlab: bad device fields: <why>`. So does a seat value the setter refuses, such as a port index outside the device, a non-contiguous route mask, or a non-static `proto`. A rejected call applies nothing.
+- Learned seats (`mac`, `arp`) apply at open, but a later `reset_config` still clears them, the same as a reload.
 
 ## reset_config
 
@@ -124,6 +159,8 @@ The session already updates its own startup text on `write memory` and `write er
 1. Restores every config field from the baseline: hostname, descriptions, interface addresses and admin state, VLANs, static routes, access lists and `ip access-group` bindings, NAT roles and static NAT entries, DHCP service and excluded addresses, OSPF settings, toggles.
 2. Clears learned state a reload drops: ARP cache, MAC table, flow table, NAT translations, OSPF adjacency state, pending frames, probe jobs.
 3. Returns the session to user exec. It drops any open dialog and resets the mode context.
+
+The restore also reinstates the authored power flag. To keep a running device running, read the power state before the call and pass it to `set_power` afterwards.
 
 Carrier bindings are topology, not config: each port keeps its link attachment and live carrier state. Canvas position is not config either. Connected routes re-derive from the restored interfaces.
 

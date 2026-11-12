@@ -12,46 +12,15 @@ export class NetLab {
         wasm.__wbg_netlab_free(ptr, 0);
     }
     /**
-     * `proto` is "ip", "icmp", "tcp" or "udp". Port 0 means any.
+     * One ACE as a JS object: `{num, permit, proto, src, src_wild, dst,
+     * dst_wild, sport?, dport?}` — `proto` is "ip", "icmp", "tcp" or
+     * "udp"; `sport`/`dport` 0 or absent means any.
      * @param {number} dev
-     * @param {number} num
-     * @param {boolean} permit
-     * @param {string} proto
-     * @param {string} src
-     * @param {string} src_wild
-     * @param {string} dst
-     * @param {string} dst_wild
-     * @param {number} sport
-     * @param {number} dport
+     * @param {any} spec
      * @returns {boolean}
      */
-    acl_add(dev, num, permit, proto, src, src_wild, dst, dst_wild, sport, dport) {
-        const val6 = +dev;
-        const val7 = +num;
-        const val8 = +permit;
-        const val9 = +sport;
-        const val10 = +dport;
-        let ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4;
-        try {
-            ptr0 = passStringToWasm0(proto, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(src, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            len1 = WASM_VECTOR_LEN;
-            ptr2 = passStringToWasm0(src_wild, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            len2 = WASM_VECTOR_LEN;
-            ptr3 = passStringToWasm0(dst, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            len3 = WASM_VECTOR_LEN;
-            ptr4 = passStringToWasm0(dst_wild, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            len4 = WASM_VECTOR_LEN;
-        } catch (e) {
-            if (ptr4) { wasm.__wbindgen_free(ptr4, len4 * 1, 1); }
-            if (ptr3) { wasm.__wbindgen_free(ptr3, len3 * 1, 1); }
-            if (ptr2) { wasm.__wbindgen_free(ptr2, len2 * 1, 1); }
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
-            throw e;
-        }
-        const ret = wasm.netlab_acl_add(this.__wbg_ptr, val6, val7, val8, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, val9, val10);
+    acl_add(dev, spec) {
+        const ret = wasm.netlab_acl_add(this.__wbg_ptr, dev, spec);
         return ret !== 0;
     }
     /**
@@ -74,13 +43,13 @@ export class NetLab {
         const val4 = +y;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(kind, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_add_device(this.__wbg_ptr, ptr0, len0, ptr1, len1, val3, val4);
@@ -96,13 +65,13 @@ export class NetLab {
         const val3 = +dev;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_add_dns_record(this.__wbg_ptr, val3, ptr0, len0, ptr1, len1);
@@ -143,20 +112,65 @@ export class NetLab {
         const val5 = +out_port;
         let ptr0, len0, ptr1, len1, ptr2, len2;
         try {
-            ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(mask, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(mask, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
-            ptr2 = passStringToWasm0(next_hop, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr2 = passStringToWasm0(next_hop, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len2 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr2) { wasm.__wbindgen_free(ptr2, len2 * 1, 1); }
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr2) { wasm.__wbindgen_export3(ptr2, len2 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_add_route(this.__wbg_ptr, val4, ptr0, len0, ptr1, len1, ptr2, len2, val5);
         return ret !== 0;
+    }
+    /**
+     * Lab-document seat apply — one grouped call for every codec seat the
+     * per-field exports cannot reach: port admin_up/method/stats, static
+     * routes with ad/metric/learned_tick, mac/arp rows, vlan seats, toggles,
+     * and the ospf block. `fields` is the JSON object labyaml's applySeats()
+     * emits; the missing-session Err matches every cli_* export. A rejected
+     * seat set returns `netlab: bad device fields` and leaves the device
+     * untouched — the apply runs on a scratch clone and commits whole.
+     * @param {number} dev
+     * @param {string} fields
+     */
+    apply_device_fields(dev, fields) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(fields, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_apply_device_fields(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeFromExternrefTable0(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Snapshot the device's current config as its authored baseline —
+     * call it once the lab document has finished applying one node.
+     * @param {number} dev
+     */
+    baseline_commit(dev) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_baseline_commit(retptr, this.__wbg_ptr, dev);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeFromExternrefTable0(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
     }
     /**
      * @param {number} dev
@@ -164,6 +178,189 @@ export class NetLab {
      */
     clear_ip(dev, port) {
         wasm.netlab_clear_ip(this.__wbg_ptr, dev, port);
+    }
+    /**
+     * @param {number} dev
+     * @param {string} before_cursor
+     * @returns {any}
+     */
+    cli_complete(dev, before_cursor) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(before_cursor, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_complete(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeFromExternrefTable0(r1);
+            }
+            return takeFromExternrefTable0(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string} line
+     * @returns {any}
+     */
+    cli_exec(dev, line) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(line, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_exec(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeFromExternrefTable0(r1);
+            }
+            return takeFromExternrefTable0(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string} before_cursor
+     * @returns {any}
+     */
+    cli_help(dev, before_cursor) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(before_cursor, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_help(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeFromExternrefTable0(r1);
+            }
+            return takeFromExternrefTable0(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string} op
+     * @returns {any}
+     */
+    cli_key(dev, op) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(op, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_key(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeFromExternrefTable0(r1);
+            }
+            return takeFromExternrefTable0(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @returns {string}
+     */
+    cli_prompt(dev) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_cli_prompt(retptr, this.__wbg_ptr, dev);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr1 = r0;
+            var len1 = r1;
+            if (r3) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(r2);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export3(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string} text
+     * @returns {any}
+     */
+    cli_script(dev, text) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passStringToWasm0(text, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_script(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeFromExternrefTable0(r1);
+            }
+            return takeFromExternrefTable0(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string[]} names
+     */
+    cli_set_ifnames(dev, names) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            const ptr0 = passArrayJsValueToWasm0(names, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_set_ifnames(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeFromExternrefTable0(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @param {number} dev
+     * @param {string | null} [text]
+     */
+    cli_set_startup(dev, text) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            const val2 = +dev;
+            var ptr0 = isLikeNone(text) ? 0 : passStringToWasm0(text, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            var len0 = WASM_VECTOR_LEN;
+            wasm.netlab_cli_set_startup(retptr, this.__wbg_ptr, val2, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeFromExternrefTable0(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
     }
     /**
      * @param {number} dev
@@ -181,7 +378,7 @@ export class NetLab {
      */
     dns_query(dev, name) {
         const val2 = +dev;
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_dns_query(this.__wbg_ptr, val2, ptr0, len0);
         return ret !== 0;
@@ -202,12 +399,16 @@ export class NetLab {
         let deferred1_0;
         let deferred1_1;
         try {
-            const ret = wasm.netlab_drain_events(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_drain_events(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
         } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
         }
     }
     /**
@@ -229,7 +430,7 @@ export class NetLab {
     ext_inject(dev, port, bytes) {
         const val2 = +dev;
         const val3 = +port;
-        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export);
         const len0 = WASM_VECTOR_LEN;
         wasm.netlab_ext_inject(this.__wbg_ptr, val2, val3, ptr0, len0);
     }
@@ -242,7 +443,7 @@ export class NetLab {
     http_get(dev, dst, port) {
         const val2 = +dev;
         const val3 = +port;
-        const ptr0 = passStringToWasm0(dst, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(dst, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_http_get(this.__wbg_ptr, val2, ptr0, len0, val3);
         return ret !== 0;
@@ -257,7 +458,7 @@ export class NetLab {
     inject_link(link, from, bytes) {
         const val2 = +link;
         const val3 = +from;
-        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_inject_link(this.__wbg_ptr, val2, val3, ptr0, len0);
         return ret !== 0;
@@ -282,13 +483,13 @@ export class NetLab {
         const val4 = +outside_port;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(inside, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(inside, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(proto, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(proto, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_nat_static_clear(this.__wbg_ptr, val3, ptr0, len0, ptr1, len1, val4);
@@ -309,13 +510,13 @@ export class NetLab {
         const val5 = +outside_port;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(inside, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(inside, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(proto, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(proto, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_nat_static(this.__wbg_ptr, val3, ptr0, len0, ptr1, len1, val4, val5);
@@ -356,13 +557,13 @@ export class NetLab {
         const val4 = +area;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(prefix, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(wild, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(wild, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_ospf_network(this.__wbg_ptr, val3, ptr0, len0, ptr1, len1, val4);
@@ -375,7 +576,7 @@ export class NetLab {
      */
     ping(src, dst_ip) {
         const val2 = +src;
-        const ptr0 = passStringToWasm0(dst_ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(dst_ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_ping(this.__wbg_ptr, val2, ptr0, len0);
         return ret !== 0;
@@ -389,7 +590,7 @@ export class NetLab {
     probe_tcp(dev, dst, port) {
         const val2 = +dev;
         const val3 = +port;
-        const ptr0 = passStringToWasm0(dst, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(dst, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_probe_tcp(this.__wbg_ptr, val2, ptr0, len0, val3);
         return ret !== 0;
@@ -404,7 +605,7 @@ export class NetLab {
     probe_ttl(src, dst_ip, ttl) {
         const val2 = +src;
         const val3 = +ttl;
-        const ptr0 = passStringToWasm0(dst_ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(dst_ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_probe_ttl(this.__wbg_ptr, val2, ptr0, len0, val3);
         return ret !== 0;
@@ -421,13 +622,13 @@ export class NetLab {
         const val4 = +port;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(dst, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(dst, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(payload, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(payload, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_probe_udp(this.__wbg_ptr, val3, ptr0, len0, val4, ptr1, len1);
@@ -458,9 +659,36 @@ export class NetLab {
      */
     rename_device(id, name) {
         const val2 = +id;
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         wasm.netlab_rename_device(this.__wbg_ptr, val2, ptr0, len0);
+    }
+    /**
+     * Reload replay target: the device returns to its authored baseline
+     * — the snapshot `baseline_commit` last took. Learned state clears,
+     * carrier bindings stay live, and the session seat returns to Exec
+     * with an empty context and no dialog.
+     * @param {number} dev
+     */
+    reset_config(dev) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_reset_config(retptr, this.__wbg_ptr, dev);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeFromExternrefTable0(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Wholesale lab reset — frees every session; in-flight adapter
+     * references degrade to the missing-session Err.
+     */
+    restore() {
+        wasm.netlab_restore(this.__wbg_ptr);
     }
     /**
      * `dir` is "in", "out", "off-in" or "off-out".
@@ -474,7 +702,7 @@ export class NetLab {
         const val2 = +dev;
         const val3 = +port;
         const val4 = +num;
-        const ptr0 = passStringToWasm0(dir, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(dir, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_access_group(this.__wbg_ptr, val2, val3, val4, ptr0, len0);
         return ret !== 0;
@@ -493,7 +721,7 @@ export class NetLab {
      */
     set_dns(dev, ip) {
         const val2 = +dev;
-        const ptr0 = passStringToWasm0(ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_dns(this.__wbg_ptr, val2, ptr0, len0);
         return ret !== 0;
@@ -505,7 +733,7 @@ export class NetLab {
      */
     set_gateway(dev, gw) {
         const val2 = +dev;
-        const ptr0 = passStringToWasm0(gw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(gw, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_gateway(this.__wbg_ptr, val2, ptr0, len0);
         return ret !== 0;
@@ -520,7 +748,7 @@ export class NetLab {
     set_helper(dev, port, ip) {
         const val2 = +dev;
         const val3 = +port;
-        const ptr0 = passStringToWasm0(ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_helper(this.__wbg_ptr, val2, val3, ptr0, len0);
         return ret !== 0;
@@ -537,13 +765,13 @@ export class NetLab {
         const val4 = +port;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(ip, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(mask, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(mask, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_set_ip(this.__wbg_ptr, val3, val4, ptr0, len0, ptr1, len1);
@@ -567,7 +795,7 @@ export class NetLab {
         const val4 = +jitter;
         const val5 = +loss;
         const val6 = +mtu;
-        const ptr0 = passStringToWasm0(speed, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(speed, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_link_impair(this.__wbg_ptr, val2, val3, val4, val5, val6, ptr0, len0);
         return ret !== 0;
@@ -589,7 +817,7 @@ export class NetLab {
     set_nat(dev, port, role) {
         const val2 = +dev;
         const val3 = +port;
-        const ptr0 = passStringToWasm0(role, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(role, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.netlab_set_nat(this.__wbg_ptr, val2, val3, ptr0, len0);
         return ret !== 0;
@@ -627,13 +855,13 @@ export class NetLab {
         const val6 = +native;
         let ptr0, len0, ptr1, len1;
         try {
-            ptr0 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr0 = passStringToWasm0(mode, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len0 = WASM_VECTOR_LEN;
-            ptr1 = passStringToWasm0(allowed, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            ptr1 = passStringToWasm0(allowed, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             len1 = WASM_VECTOR_LEN;
         } catch (e) {
-            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
-            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 1, 1); }
+            if (ptr1) { wasm.__wbindgen_export3(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export3(ptr0, len0 * 1, 1); }
             throw e;
         }
         const ret = wasm.netlab_set_switchport(this.__wbg_ptr, val3, val4, ptr0, len0, val5, val6, ptr1, len1);
@@ -647,22 +875,47 @@ export class NetLab {
         let deferred1_0;
         let deferred1_1;
         try {
-            const ret = wasm.netlab_snapshot(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_snapshot(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
         } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
         }
     }
     tick() {
         wasm.netlab_tick(this.__wbg_ptr);
+    }
+    /**
+     * Arm the traceroute job — the `trace` intent's probe.
+     * @param {number} src
+     * @param {string} dst_ip
+     * @returns {boolean}
+     */
+    traceroute(src, dst_ip) {
+        const val2 = +src;
+        const ptr0 = passStringToWasm0(dst_ip, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.netlab_traceroute(this.__wbg_ptr, val2, ptr0, len0);
+        return ret !== 0;
     }
 }
 if (Symbol.dispose) NetLab.prototype[Symbol.dispose] = NetLab.prototype.free;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_string_get_7ce8eee7fd327545: function(arg0, arg1) {
+            const obj = arg1;
+            const ret = typeof(obj) === 'string' ? obj : undefined;
+            var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            var len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 0, ptr1, true);
+        },
         __wbg___wbindgen_throw_4c88d8bf264fd984: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
@@ -678,12 +931,20 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg_parse_c3f72b5a24f83c01: function() { return handleError(function (arg0, arg1) {
+            const ret = JSON.parse(getStringFromWasm0(arg0, arg1));
+            return ret;
+        }, arguments); },
         __wbg_push_c9f4893fc209f768: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
         },
         __wbg_set_2793479888329cb6: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = Reflect.set(arg0, arg1, arg2);
+            return ret;
+        }, arguments); },
+        __wbg_stringify_0a0fbf2ef722380a: function() { return handleError(function (arg0) {
+            const ret = JSON.stringify(arg0);
             return ret;
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0) {
@@ -716,7 +977,7 @@ const NetLabFinalization = (typeof FinalizationRegistry === 'undefined')
     : new FinalizationRegistry(ptr => wasm.__wbg_netlab_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
-    const idx = wasm.__externref_table_alloc();
+    const idx = wasm.__wbindgen_export5();
     wasm.__wbindgen_externrefs.set(idx, obj);
     return idx;
 }
@@ -724,6 +985,14 @@ function addToExternrefTable0(obj) {
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+let cachedDataViewMemory0 = null;
+function getDataViewMemory0() {
+    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
+        cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
+    }
+    return cachedDataViewMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -744,14 +1013,28 @@ function handleError(f, args) {
         return f.apply(this, args);
     } catch (e) {
         const idx = addToExternrefTable0(e);
-        wasm.__wbindgen_exn_store(idx);
+        wasm.__wbindgen_export4(idx);
     }
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 
@@ -792,6 +1075,12 @@ function passStringToWasm0(arg, malloc, realloc) {
     return ptr;
 }
 
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__wbindgen_export6(idx);
+    return value;
+}
+
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
 cachedTextDecoder.decode();
 const MAX_SAFARI_DECODE_BYTES = 2146435072;
@@ -826,6 +1115,7 @@ function __wbg_finalize_init(instance, module) {
     wasmInstance = instance;
     wasm = instance.exports;
     wasmModule = module;
+    cachedDataViewMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

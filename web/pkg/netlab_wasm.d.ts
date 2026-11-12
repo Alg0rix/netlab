@@ -5,9 +5,11 @@ export class NetLab {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * `proto` is "ip", "icmp", "tcp" or "udp". Port 0 means any.
+     * One ACE as a JS object: `{num, permit, proto, src, src_wild, dst,
+     * dst_wild, sport?, dport?}` — `proto` is "ip", "icmp", "tcp" or
+     * "udp"; `sport`/`dport` 0 or absent means any.
      */
-    acl_add(dev: number, num: number, permit: boolean, proto: string, src: string, src_wild: string, dst: string, dst_wild: string, sport: number, dport: number): boolean;
+    acl_add(dev: number, spec: any): boolean;
     acl_clear(dev: number, num: number): void;
     /**
      * kind: "host" | "switch" | "router" | "ext"
@@ -23,7 +25,30 @@ export class NetLab {
      */
     add_link_ports(a: number, pa: number, b: number, pb: number): number;
     add_route(dev: number, prefix: string, mask: string, next_hop: string, out_port: number): boolean;
+    /**
+     * Lab-document seat apply — one grouped call for every codec seat the
+     * per-field exports cannot reach: port admin_up/method/stats, static
+     * routes with ad/metric/learned_tick, mac/arp rows, vlan seats, toggles,
+     * and the ospf block. `fields` is the JSON object labyaml's applySeats()
+     * emits; the missing-session Err matches every cli_* export. A rejected
+     * seat set returns `netlab: bad device fields` and leaves the device
+     * untouched — the apply runs on a scratch clone and commits whole.
+     */
+    apply_device_fields(dev: number, fields: string): void;
+    /**
+     * Snapshot the device's current config as its authored baseline —
+     * call it once the lab document has finished applying one node.
+     */
+    baseline_commit(dev: number): void;
     clear_ip(dev: number, port: number): void;
+    cli_complete(dev: number, before_cursor: string): any;
+    cli_exec(dev: number, line: string): any;
+    cli_help(dev: number, before_cursor: string): any;
+    cli_key(dev: number, op: string): any;
+    cli_prompt(dev: number): string;
+    cli_script(dev: number, text: string): any;
+    cli_set_ifnames(dev: number, names: string[]): void;
+    cli_set_startup(dev: number, text?: string | null): void;
     dhcp_client(dev: number, port: number): boolean;
     dns_query(dev: number, name: string): boolean;
     /**
@@ -74,6 +99,18 @@ export class NetLab {
     remove_route(dev: number, idx: number): void;
     rename_device(id: number, name: string): void;
     /**
+     * Reload replay target: the device returns to its authored baseline
+     * — the snapshot `baseline_commit` last took. Learned state clears,
+     * carrier bindings stay live, and the session seat returns to Exec
+     * with an empty context and no dialog.
+     */
+    reset_config(dev: number): void;
+    /**
+     * Wholesale lab reset — frees every session; in-flight adapter
+     * references degrade to the missing-session Err.
+     */
+    restore(): void;
+    /**
      * `dir` is "in", "out", "off-in" or "off-out".
      */
     set_access_group(dev: number, port: number, num: number, dir: string): boolean;
@@ -107,6 +144,10 @@ export class NetLab {
      */
     snapshot(): string;
     tick(): void;
+    /**
+     * Arm the traceroute job — the `trace` intent's probe.
+     */
+    traceroute(src: number, dst_ip: string): boolean;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -114,18 +155,28 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_netlab_free: (a: number, b: number) => void;
-    readonly netlab_acl_add: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => number;
+    readonly netlab_acl_add: (a: number, b: number, c: any) => number;
     readonly netlab_acl_clear: (a: number, b: number, c: number) => void;
     readonly netlab_add_device: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly netlab_add_dns_record: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly netlab_add_link: (a: number, b: number, c: number) => number;
     readonly netlab_add_link_ports: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly netlab_add_route: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
+    readonly netlab_apply_device_fields: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_baseline_commit: (a: number, b: number, c: number) => void;
     readonly netlab_clear_ip: (a: number, b: number, c: number) => void;
+    readonly netlab_cli_complete: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_exec: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_help: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_key: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_prompt: (a: number, b: number, c: number) => void;
+    readonly netlab_cli_script: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_set_ifnames: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly netlab_cli_set_startup: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly netlab_dhcp_client: (a: number, b: number, c: number) => number;
     readonly netlab_dns_query: (a: number, b: number, c: number, d: number) => number;
     readonly netlab_drain_captures: (a: number) => any;
-    readonly netlab_drain_events: (a: number) => [number, number];
+    readonly netlab_drain_events: (a: number, b: number) => void;
     readonly netlab_drain_ext: (a: number) => any;
     readonly netlab_ext_inject: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly netlab_http_get: (a: number, b: number, c: number, d: number, e: number) => number;
@@ -145,6 +196,8 @@ export interface InitOutput {
     readonly netlab_remove_link: (a: number, b: number) => void;
     readonly netlab_remove_route: (a: number, b: number, c: number) => void;
     readonly netlab_rename_device: (a: number, b: number, c: number, d: number) => void;
+    readonly netlab_reset_config: (a: number, b: number, c: number) => void;
+    readonly netlab_restore: (a: number) => void;
     readonly netlab_set_access_group: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly netlab_set_capture: (a: number, b: number, c: number) => void;
     readonly netlab_set_dns: (a: number, b: number, c: number, d: number) => number;
@@ -157,14 +210,18 @@ export interface InitOutput {
     readonly netlab_set_power: (a: number, b: number, c: number) => void;
     readonly netlab_set_services: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly netlab_set_switchport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
-    readonly netlab_snapshot: (a: number) => [number, number];
+    readonly netlab_snapshot: (a: number, b: number) => void;
     readonly netlab_tick: (a: number) => void;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __externref_table_alloc: () => number;
+    readonly netlab_traceroute: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export3: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_export4: (a: number) => void;
+    readonly __wbindgen_export5: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+    readonly __wbindgen_export6: (a: number) => void;
+    readonly __wbindgen_export7: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

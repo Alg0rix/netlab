@@ -2,7 +2,9 @@
 
 `netlab-core` includes an IOS-style command-line engine in `core/src/cli/`. One `Cli` session drives one device: a router, a switch, or a host.
 
-This page documents the engine's command surface. The browser console ships its own shell in `web/cli.js`. The [README](../README.md#simulated-cli-reference) lists that shell's commands. The [WASM exports](wasm-api.md) connect this engine to JavaScript. [Corpus](corpus.md) describes the transcript tests. The two grammars differ. For example, the engine takes `ip route <net> <mask> <next-hop>`, and the browser shell takes `ip route <prefix/len> <next-hop>`.
+The browser console of every simulated node runs on this engine. `web/cli.js` sends each typed line to the engine and draws the result. It does not parse commands. Every command, error, and dialog on this page applies to the browser console word for word.
+
+This page documents the command surface, the browser console, and the honest gaps. The [README](../README.md#simulated-cli-reference) gives a short quick reference. The [WASM exports](wasm-api.md) connect the engine to JavaScript. [Corpus](corpus.md) describes the transcript tests. The [lab format](lab-format.md) describes how a lab file stores configuration and startup scripts.
 
 ## Session API
 
@@ -36,6 +38,8 @@ Routers and switches use six modes. Hosts have one mode and no ladder.
 - If a command does not exist in the current mode, the engine tries the parent modes. The mode does not change. In `(config)#`, `show running-config` works.
 - `do <command>` runs a privileged exec command from any config mode.
 - Interface names use the device's canonical form, such as `GigabitEthernet0/0` on a router and `FastEthernet0/1` on a switch. Short forms such as `g0/0` and `fa0/1` work.
+- A router port `g0/N` is port `N` on the canvas. A switch port `fa0/N` is canvas port `e(N-1)`. For example, `fa0/2` is `e1`.
+- Router interfaces start administratively down. Enter `no shutdown` on each interface you use. Switch interfaces start up.
 
 ## Abbreviation, `?`, and Tab
 
@@ -80,6 +84,68 @@ Dialogs take over the prompt until you answer. A dialog sees every line you type
 - Each line is echoed with its prompt before its output.
 - Errors collect with the line number from your text. The rest of the script still runs.
 - After the last line, the session returns to the mode it had before the script. Any open dialog is cleared.
+
+## The browser console
+
+Double-click a simulated node, or open the **Console** tab in the bottom dock. Hosts, routers, and switches from the simulated catalog use this console. Emulated nodes keep their serial and VGA terminals.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| Enter | Runs the line. An open dialog reads the line as its answer. |
+| `?` | Lists the keywords that can follow the text before the cursor. The key does not insert a character. |
+| Tab | Completes the last word. Several matches print as a list. |
+| ↑ / ↓ | Recall earlier lines. The console keeps the last 256. The first ↑ saves the line you are typing. ↓ past the newest line restores it. |
+| Ctrl+C | Cancels an open dialog. It also stops a running `ping` or `traceroute` from printing. |
+| Ctrl+Z | Jumps to privileged exec, like `end`. |
+| Ctrl+A / Ctrl+E | Moves the cursor to the start or the end of the line. |
+| Ctrl+B / Ctrl+F | Moves the cursor back or forward one character. |
+| Ctrl+U / Ctrl+W | Deletes the whole line, or the word before the cursor. |
+| Ctrl+L | Clears the scrollback. The mode and the prompt stay. |
+| Paste | Runs every pasted line as one script. See [Scripts and paste](#scripts-and-paste). |
+
+- Esc then B or F, and Ctrl+R, do nothing.
+- `show history` prints the engine's own history of 10 lines. The ↑ and ↓ keys use the console's longer list of 256.
+- A rejected `?` or Tab draws a `^` under the first rejected word, then the standard error line.
+- Each Enter and each paste adds one undo step. A command that changes configuration also refreshes the canvas and queues an autosave.
+
+### Probes
+
+`ping` and `traceroute` on routers and switches, and `ping` and `trace` on hosts, send real probes through the simulation. Replies print as the simulation ticks. In Simulation mode, a paused simulation prints nothing until you press play or step.
+
+If the node is powered off or the address is invalid, the console prints `could not send probe`.
+
+### Console states
+
+- `connecting…` appears while the engine loads. The input stays disabled until the first prompt arrives.
+- If you delete a node while its console is open, the console prints `% node was deleted` and disables the input.
+
+### Saving, erasing, and reloading
+
+Each simulated node has a startup script. The Inspector shows it under **Startup script**, next to the **Apply on start** box. The script is plain text in the same form as `show running-config`.
+
+| You do | Result |
+|---|---|
+| `write memory` or `copy running-config startup-config` | Stores the running configuration as the startup script. Turns **Apply on start** on. |
+| `write erase` or `erase startup-config` | Deletes the startup script. Turns **Apply on start** off. |
+| `show startup-config` | Prints the startup script. |
+| Edit the script in the Inspector | Changes the stored text at once. `show startup-config` prints the new text. |
+| Click **Apply** in the Inspector | Runs the script on the running node now. This works with **Apply on start** off. The node must run. |
+| Start a node | Powers it on. If **Apply on start** is on and a script exists, the script runs. |
+| Open or load a lab | Builds every node from the file. Nodes with **Apply on start** on then run their script. |
+| `reload` | Restores the loaded configuration, then runs the script when **Apply on start** is on. |
+
+A reload does these things in order:
+
+1. It restores the node to the configuration it had when the lab loaded. A node you added to the canvas returns to factory defaults.
+2. It clears learned state: the ARP cache, the MAC table, NAT translations, and OSPF neighbors.
+3. It keeps the link attachments and keeps the node running or stopped, as before.
+4. It runs the startup script if **Apply on start** is on.
+
+Changes you did not save with `write memory` vanish at reload. The autosave keeps the lab in the browser, but it does not change the startup script.
+
+When a script line fails, the console shows a message with the first three failures as `line N: message`. The remaining lines still run.
 
 ## Command reference
 
@@ -202,3 +268,19 @@ These commands do not exist in the grammar. The engine rejects them with the err
 | `username ...`, `line ...`, `banner ...` | The `Translating ...` line and `% Unknown command or computer name, or unable to find computer address`. |
 | `router ospf <n>` on a switch, `vlan <n>` on a router | Same unknown-command output. |
 | `show access-lists` | `% Invalid input detected at '^' marker.` Use `show ip access-lists`. |
+
+## Forms from the earlier browser shell
+
+Older lab notes and startup scripts can use forms from the browser shell that the console used before. The engine rejects them. This table shows the engine form to use.
+
+| Earlier form | In the engine |
+|---|---|
+| Host: `ip eth1 <addr/len>`, `ip dns <ip>`, `clear ip`, `show route`, `hostname <name>`, `reload` | `% Invalid input detected at '^' marker.` A host takes `ip <addr/len> [<gateway>]`. Rename with `set pcname <name>`. |
+| Host: `traceroute <ip>`, `ping <ip> -c <n>` | `% Invalid input detected at '^' marker.` Use `trace <ip>` and `ping <ip>`. |
+| Host: `nslookup`, `curl`, `nc`, `server`, `traffic` | Typed alone, `% <word>: not supported in this lab`. With arguments, the invalid-input error. |
+| Router or switch: `ip address <if> <addr/len>`, `switchport mode <if> access` on one line | Open the interface first with `interface <if>`. Then use `ip address <ip> <mask>` or `switchport mode access`. Masks use dotted-quad form. |
+| Router: `ip route <prefix/len> <next-hop> [<if>]`, `no ip route <index>` | `ip route <net> <mask> <next-hop> [<1-255>]` in global config. Remove a route with `no ip route <net> <mask> <next-hop>`. |
+| Router: `router ospf network <prefix> <wild> area <id>`, `ip ospf <if> area <n>` | `router ospf <pid>`, then `network <net> <wildcard> area <n>`. |
+| Router: `ip nat inside source static tcp\|udp <ip> <port> <port>` (port forward) | `% Invalid input detected at '^' marker.` Only the 1:1 form `ip nat inside source static <inside-local> <inside-global>` exists. |
+| Router: `show ip nat` | `% Incomplete command.` Use `show ip nat translations`. |
+| Router or switch: `traffic <ip> tcp\|udp\|icmp <port> -c <n>`, `nslookup` | The `Translating ...` line, then the unknown-command error. |

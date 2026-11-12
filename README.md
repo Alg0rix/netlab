@@ -37,14 +37,14 @@ No backend server, local daemon, or cloud VM is required. Operating system image
 - **Link quality**
   - Select a cable and set delay, jitter, loss, MTU, and a speed badge (`10M`, `100M`, `1G`, `10G`, `WAN Serial`). `10M`, `100M` and WAN Serial also add serialization delay. The canvas labels a link when it is not a plain 1G cable.
 - **Startup scripts**
-  - Every node has a plain-text startup script in the inspector (IOS config, MikroTik `.rsc`, or a shell script). **Apply** pastes it into the console. Simulated nodes can apply it on start. IOS NVRAM (`write memory`) stays separate.
+  - Every node has a plain-text startup script in the inspector (IOS config, MikroTik `.rsc`, or a shell script). **Apply** pastes it into the console. Simulated nodes can apply it on start, and `write memory` on a simulated node saves the running configuration into this script. IOS NVRAM on emulated Cisco nodes stays separate.
 - **Built-in Packet Capture & Wireshark Export**
   - Attach a live sniffer to any link. Filter the live list (`stp`, `pvst`, `vlan == 10`, `arp`, `icmp`, `ospf`, `ip == 10.0.0.1`), with row colours for ARP, ICMP, TCP, UDP, DHCP, DNS, STP/PVST+, 802.1Q and routing protocols. Replay a captured frame, inject a crafted Ethernet/VLAN ARP or ICMP frame, or **Follow TCP** to concatenate the payload of the selected 4-tuple in both directions. Inspect frames with a built-in protocol dissector (Ethernet II, **802.1Q VLAN**, **802.1ad QinQ**, **STP / RSTP / PVST+ BPDUs**, **CDP / VTP**, **LLDP**, **LACP**, ARP, IPv4, ICMP, TCP, UDP, DHCP, DNS, HTTP, GRE, OSPF, EIGRP, VRRP), interactive hex dump, and one-click **`.pcap` export** for Wireshark.
 - **Interactive Consoles**
-  - **Simulated CLI:** Built-in VPCS shell for hosts and a Cisco-like CLI for switches and routers featuring Tab completion, command abbreviation (`sh ip int br`, `sh ip ro`, `sh run`), and contextual `?` help.
+  - **Simulated CLI:** Built-in VPCS shell for hosts and an IOS-style CLI for switches and routers. It has a mode ladder, Tab completion, and contextual `?` help. It also supports abbreviations (`sh ip int br`, `sh run`), confirmation dialogs, and script paste.
   - **Emulated Terminals:** Full `xterm.js` serial console and VGA screen tabs for Cisco IOS, RouterOS, Open vSwitch, and x86 VMs.
 - **Diagramming & Portable Labs**
-  - Infinite pan/zoom canvas with grid snap, minimap, interface labels, sticky notes, vector shapes (rectangles, ellipses, lines), dark/light theme toggle, PNG diagram export, and portable `.netlab.json` topology files. **File → Save YAML lab…** writes a readable `.netlab.yaml` of the same topology (startup blocks included). **Edit → Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) restores a topology snapshot and stops running VMs. **Lab → Snapshots…** stores a named copy of the topology plus that moment's IOS NVRAM and VM disks.
+  - Infinite pan/zoom canvas with grid snap, minimap, interface labels, sticky notes, vector shapes (rectangles, ellipses, lines), dark/light theme toggle, PNG diagram export, and portable `.netlab.json` topology files. **File → Save YAML lab…** writes a readable `.netlab.yaml` of the same topology (startup blocks included; see [`docs/lab-format.md`](docs/lab-format.md)). **Edit → Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) restores a topology snapshot and stops running VMs. **Lab → Snapshots…** stores a named copy of the topology plus that moment's IOS NVRAM and VM disks.
 
 ---
 
@@ -144,90 +144,82 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
 
 ## Simulated CLI Reference
 
-Double-click any node on the canvas (or select it and open the **Console** tab in the bottom dock) to access its interactive shell. Both shells support **Tab** completion, command history (`↑`/`↓`), and contextual **`?`** help.
+Double-click a simulated node on the canvas, or select it and open the **Console** tab in the bottom dock. Hosts, routers, and switches use an IOS-style CLI engine from `netlab-core`. The console runs that engine directly. Emulated nodes keep their serial and VGA terminals.
 
-The commands below belong to the browser console. `netlab-core` also contains an IOS-style CLI engine with a full mode ladder, confirmation dialogs, and script paste. See [`docs/cli.md`](docs/cli.md) for its command surface and its unsupported commands, [`docs/wasm-api.md`](docs/wasm-api.md) for its JavaScript exports, and [`docs/corpus.md`](docs/corpus.md) for its transcript tests.
+The full command surface, the mode ladder, confirmation dialogs, and the list of unsupported commands are in [`docs/cli.md`](docs/cli.md). [`docs/wasm-api.md`](docs/wasm-api.md) describes the JavaScript exports. [`docs/lab-format.md`](docs/lab-format.md) describes how a lab file stores configuration. [`docs/corpus.md`](docs/corpus.md) describes the transcript tests.
 
-### End Hosts (`VPCS` / `Laptop` / `Server`)
+### Console keys
+
+| Key | Action |
+|---|---|
+| `?` | List the keywords that can come next |
+| `Tab` | Complete the word. Several matches print as a list |
+| `↑` / `↓` | Recall earlier lines |
+| `Ctrl+C` | Cancel a dialog. Stop a running ping or traceroute from printing |
+| `Ctrl+Z` | Jump to privileged exec |
+| `Ctrl+A` / `Ctrl+E` | Move to the start or end of the line |
+| `Ctrl+B` / `Ctrl+F` | Move back or forward one character |
+| `Ctrl+U` / `Ctrl+W` | Delete the line, or the word before the cursor |
+| `Ctrl+L` | Clear the scrollback |
+| Paste | Run every pasted line as one script |
+
+### Modes (routers and switches)
 
 ```text
-ip [if] <addr/len> [gw]     Configure IPv4 address on eth0 (or specified ethN) and optional gateway
-                            Examples:
-                              ip 192.168.10.11/24 192.168.10.1
-                              ip eth1 10.0.20.11/24
-ip dhcp [if]                DHCP Discover/Request on that link (UDP 67/68) and install the lease
-ip dns <ip>                 Resolver for nslookup (DHCP also sets this)
-clear ip dns                Forget the resolver
-nslookup <name>             Query the resolver
-curl <ip> [port]            HTTP GET (default port 80)
-nc [-u] <ip> <port>         TCP connect, or a UDP probe with -u
-server dhcp|dns|http on|off Toggle a daemon on this host (new Server nodes start with all three on)
-server dns a <name> <ip>    Publish an A record
-clear ip [if]               Remove the configured IPv4 address on eth0 (or specified ethN)
-show ip                     Display IPv4 addresses, gateway, DNS, DHCP state, and MAC addresses
-show arp | arp              Display the ARP table
-show route                  Display the routing table
-ping <ip> [-c <count>]      Send ICMP echo requests
-traceroute <ip>             ICMP probes with TTL 1 through 8. A hop prints the router that sent time exceeded
-traffic <ip> tcp|udp|icmp <port> -c <n>
-                            Send that many probes, spaced like ping
-hostname <name>             Rename the host
-reload                      Reset dynamic state (ARP cache)
+R1>                 user exec            enable ->
+R1#                 privileged exec      configure terminal ->
+R1(config)#         global config        interface <if> | router ospf <pid> | vlan <id>
+R1(config-if)#      interface            exit | end
 ```
 
-### Simulated Switches & Routers
+`end` and `Ctrl+Z` return to privileged exec. `do <command>` runs a privileged exec command from any config mode. Abbreviations work (`sh ip int br`, `conf t`).
 
-Abbreviations work just like IOS (`sh ip int br`, `sh ip ro`, `sh mac addr`, `sh run`):
+Router interfaces start administratively down. Enter `no shutdown` on each interface you use.
+
+### End hosts (`VPCS` / `Laptop` / `Server`)
 
 ```text
-show ip interface brief     Summary of interfaces, IPv4 addresses, and link status
-show interface              Detailed interface counters and MAC addresses
-show ip route               Display connected and static routes (Router)
-show ip arp | show arp      Display the ARP cache
-show mac address-table      Display learned L2 forwarding table (Switch)
-show running-config         Print current node configuration as CLI commands
-ip address <if> <addr/len>  Assign an IPv4 address to an interface (Router)
-no ip address <if>          Remove an interface's IPv4 address (Router)
-ip route <prefix/len> <next-hop> [if]
-                            Add a static route (Router)
-no ip route <index>         Remove a static route by its index in `show ip route`
-ip nat inside|outside <if>  Source NAT. Inside hosts are masqueraded as the outside address.
-                            With an outside port and no explicit inside, every other port is inside.
-ip nat inside source static <inside-ip>
-                            1:1 map. New sessions to the outside interface address go to that inside host,
-                            including ping of the router address. One 1:1 map per router.
-ip nat inside source static tcp|udp <inside-ip> <inside-port> <outside-port>
-                            Static port forward. Does not take over the router's own ICMP.
-no ip nat inside source static <inside-ip>
-no ip nat inside source static tcp|udp <outside-port>
-show ip nat                 NAT role of each interface, plus static maps
-no ip nat <if>              Clear a NAT role
-ping <ip> [-c <count>]      Send ICMP echo requests from the device
-traceroute <ip>             ICMP probes with TTL 1 through 8
-traffic <ip> tcp|udp|icmp <port> -c <n>
-                            Send that many probes, spaced like ping
-hostname <name>             Rename the device
-reload                      Clear learned ARP and MAC tables
-switchport mode <if> access|trunk
-                            Simulated switch only. Default is access VLAN 1
-switchport access vlan <vid> <if>
-switchport trunk native <vid> <if>
-switchport trunk allowed <if> <list>|all
-                            Trunks tag every VLAN except the native VLAN
-ip access-list <n> permit|deny ip|icmp|tcp|udp <src> <wild> <dst> <wild> [eq <port>]
-                            `any` is 0.0.0.0 255.255.255.255. An applied list ends in an implicit deny
-ip access-group <n> in|out <if>
-no ip access-list <n>       Delete the list and detach it from every port
-ip helper-address <if> <server>
-                            Relay DHCP Discover/Request. giaddr is this interface
-no ip helper-address <if>
-router ospf network <prefix> <wild> area <id>
-ip ospf <if> area <n>       Simplified OSPFv2 (not the Cisco packet). Hellos stay on the link
-no router ospf              Drop adjacencies and O routes
-show ip ospf                Router id, networks, neighbors
+ip <addr/len> [gw]          Set the IPv4 address and optional gateway
+ip <addr> <mask> [gw]
+ip dhcp                     Request a lease
+ping <ip> | trace <ip>      Send ICMP echo requests, or trace the path
+arp | show arp | show ip    Show the ARP table, or the address and gateway
+set pcname <name>           Rename the host
+```
+
+### Routers and switches
+
+```text
+show ip interface brief | show interfaces | show running-config | show version
+show ip route | show arp | show ip ospf [neighbor | interface]      (router)
+show mac address-table | show vlan brief | show switchport          (switch)
+ping <ip> | traceroute <ip>
+
+interface <if>
+  ip address <ip> <mask>                  (router)
+  ip nat inside | outside                 (router)
+  ip access-group <1-2699> in|out         (router)
+  switchport mode access | trunk          (switch)
+  switchport access vlan <id>             (switch)
+  switchport trunk allowed vlan <list>    (switch)
+  shutdown | no shutdown
+ip route <net> <mask> <next-hop> [distance]
+access-list <1-2699> permit|deny ip|icmp|tcp|udp <addr> <addr>
+ip nat inside source static <inside-local> <inside-global>
+service dhcp | ip dhcp excluded-address <low> [<high>]
+router ospf <pid>  ->  network <net> <wildcard> area <n> | router-id <ip>
+vlan <id>  ->  name <word> | state active|suspend
 ```
 
 Static routes beat OSPF when the prefix length is the same. A longer OSPF prefix still wins. Connected routes always win. OSPF routes are not written back as `ip route`.
+
+### Saving and reloading
+
+- `write memory` stores the running configuration as the node's startup script and turns on **Apply on start**. The script shows in the Inspector under **Startup script**.
+- `write erase` deletes the startup script and turns **Apply on start** off.
+- `reload` restores the configuration the lab loaded with. It clears learned state (ARP, MAC, NAT translations, OSPF neighbors). It then runs the startup script if **Apply on start** is on. Unsaved changes vanish.
+
+[`docs/cli.md`](docs/cli.md#saving-erasing-and-reloading) lists the full rules. Forms from older versions of the console, such as `ip route <prefix/len> <next-hop>` on one line, are in [`docs/cli.md`](docs/cli.md#forms-from-the-earlier-browser-shell).
 
 ---
 
@@ -282,9 +274,9 @@ netlab/
 └── web/                   # Zero-build ES module frontend
     ├── main.js            # Canvas topology editor, simulation loop, inspector, marketplace UI
     ├── templates.js       # 32 built-in topology templates (Beginner → Expert) + SVG previewer
-    ├── cli.js             # Interactive VPCS & router/switch CLI with Tab/? completion
+    ├── cli.js             # Console adapter: connects the CLI engine to the keyboard and the scrollback
     ├── capture.js         # Packet dissector, TCP stream follow, hex viewer, libpcap writer
-    ├── labyaml.js         # .netlab.yaml emitter and parser for the subset netlab writes
+    ├── labyaml.js         # .netlab.yaml / .netlab.json lab-document codec (see docs/lab-format.md)
     ├── ios.js             # Cisco 7200 worker manager & NVRAM sync
     ├── ios_worker.js      # Web Worker hosting the modularized Dynamips WASM build
     ├── vm.js              # v86 emulator integration (MikroTik RouterOS & x86 VMs)

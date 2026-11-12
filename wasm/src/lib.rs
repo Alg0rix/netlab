@@ -32,6 +32,18 @@ fn missing_session(dev: DeviceId) -> JsValue {
     }
 }
 
+/// The bad-fields Err domain — `netlab: bad device fields: <why>` on the
+/// wire; JsValue::from_str has no native impl, so tests get NULL.
+fn bad_fields(msg: impl std::fmt::Display) -> JsValue {
+    #[cfg(target_arch = "wasm32")]
+    return JsValue::from_str(&format!("netlab: bad device fields: {msg}"));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = msg;
+        JsValue::NULL
+    }
+}
+
 #[wasm_bindgen]
 impl NetLab {
     #[wasm_bindgen(constructor)]
@@ -245,6 +257,11 @@ impl NetLab {
         self.topo.ping(src, dst_ip)
     }
 
+    /// Arm the traceroute job — the `trace` intent's probe.
+    pub fn traceroute(&mut self, src: u32, dst_ip: &str) -> bool {
+        self.topo.traceroute(src, dst_ip)
+    }
+
     /// ICMP echo with TTL. Used by traceroute.
     pub fn probe_ttl(&mut self, src: u32, dst_ip: &str, ttl: u8) -> bool {
         self.topo.ping_ttl(src, dst_ip, ttl)
@@ -425,6 +442,28 @@ impl NetLab {
         self.topo.ospf_clear(dev);
     }
 
+    /// Lab-document seat apply — one grouped call for every codec seat the
+    /// per-field exports cannot reach: port admin_up/method/stats, static
+    /// routes with ad/metric/learned_tick, mac/arp rows, vlan seats, toggles,
+    /// and the ospf block. `fields` is the JSON object labyaml's applySeats()
+    /// emits; the missing-session Err matches every cli_* export. A rejected
+    /// seat set returns `netlab: bad device fields` and leaves the device
+    /// untouched — the apply runs on a scratch clone and commits whole.
+    pub fn apply_device_fields(&mut self, dev: u32, fields: &str) -> Result<(), JsValue> {
+        if !self.sessions.contains_key(&dev) {
+            return Err(missing_session(dev));
+        }
+        let seats: DeviceSeats = serde_json::from_str(fields).map_err(bad_fields)?;
+        let tick = self.topo.tick;
+        let Some(d) = self.topo.devices.get_mut(&dev) else {
+            return Err(missing_session(dev));
+        };
+        let mut scratch = d.clone();
+        apply_seats(&mut scratch, seats, tick).map_err(bad_fields)?;
+        *d = scratch;
+        Ok(())
+    }
+
     /// JSON snapshot of the whole topology for rendering.
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.topo.snapshot()).unwrap_or_else(|_| "{}".into())
@@ -519,6 +558,339 @@ fn js_json(v: &JsValue) -> Option<String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn js_json(_v: &JsValue) -> Option<String> {
     None
+}
+
+/// "10.0.0.1" → octets. A row with an unparseable address drops, same as the
+/// codec's tolerant-decode edge.
+fn parse_ip4(s: &str) -> Option<[u8; 4]> {
+    let mut out = [0u8; 4];
+    let mut it = s.split('.');
+    for o in &mut out {
+        *o = it.next()?.parse().ok()?;
+    }
+    it.next().is_none().then_some(out)
+}
+
+/// "aabb.ccdd.eeff" | "aa:bb:cc:dd:ee:ff" | "aa-bb-cc-dd-ee-ff" → u64 key.
+fn parse_mac_u64(s: &str) -> Option<u64> {
+    let hex: String = s.split(['.', ':', '-']).collect();
+    if hex.len() != 12 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(&hex, 16).ok()
+}
+
+fn etype(s: &str) -> netlab_core::device::EntryType {
+    match s {
+        "static" => netlab_core::device::EntryType::Static,
+        _ => netlab_core::device::EntryType::Dynamic,
+    }
+}
+
+/// The applySeats() wire shape — every seat optional. Unknown keys are a
+/// decode error, not a silent skip: a typo'd seat key must surface.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct DeviceSeats {
+    #[serde(default)]
+    ports: Vec<SeatPort>,
+    #[serde(default)]
+    routes: Vec<SeatRoute>,
+    #[serde(default)]
+    mac: Vec<SeatMac>,
+    #[serde(default)]
+    arp: Vec<SeatArp>,
+    #[serde(default)]
+    vlans: HashMap<String, SeatVlan>,
+    #[serde(default)]
+    toggles: HashMap<String, bool>,
+    ospf: Option<SeatOspf>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatPort {
+    index: usize,
+    admin_up: Option<bool>,
+    method: Option<String>,
+    stats: Option<SeatStats>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatStats {
+    rx: Option<u64>,
+    tx: Option<u64>,
+    rx_err: Option<u64>,
+    tx_err: Option<u64>,
+    drops: Option<u64>,
+    cleared_tick: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatRoute {
+    prefix: String,
+    mask: Option<String>,
+    next_hop: String,
+    #[serde(default)]
+    out_port: usize,
+    /// The decoded route rows keep their `proto` word — only `static` is a
+    /// seat; connected re-derives and OSPF relearns.
+    proto: Option<String>,
+    ad: Option<u8>,
+    #[serde(default)]
+    metric: u32,
+    #[serde(default)]
+    learned_tick: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatMac {
+    mac: String,
+    port: usize,
+    #[serde(default = "one")]
+    vlan: u16,
+    #[serde(default)]
+    created_tick: u64,
+    #[serde(default)]
+    etype: String,
+}
+
+fn one() -> u16 {
+    1
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatArp {
+    ip: String,
+    mac: String,
+    port: usize,
+    #[serde(default)]
+    created_tick: u64,
+    #[serde(default)]
+    etype: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatVlan {
+    name: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatOspfNet {
+    net: Option<String>,
+    wild: Option<String>,
+    #[serde(default)]
+    area: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatOspf {
+    pid: u16,
+    router_id: Option<String>,
+    #[serde(default)]
+    networks: Vec<SeatOspfNet>,
+}
+
+/// Authored seats land as config, not runtime effects — admin/method/stats
+/// write fields directly (no link events during load), while routes, vlans,
+/// toggles and ospf ride the kind-gated config fns so a wrong-kind seat just
+/// skips. Only the device's own seats apply; `routing_enabled` is a
+/// constructor capability and never rewrites.
+///
+/// Seat ports are validated: an out-of-range `out_port`/`port` is an Err on
+/// the whole call — a raw index reaching `emit_ip`'s `ports[route.out_port]`
+/// would panic. KindGate skips; every other SetErr and every range violation
+/// is a bad-fields Err.
+fn apply_seats(d: &mut Device, seats: DeviceSeats, tick: u64) -> Result<(), String> {
+    use netlab_core::config::{self, ToggleKind};
+    use netlab_core::device::{ArpEntry, IpMethod, MacEntry, Route, RouteProto, Vlan, VlanState};
+
+    for sp in &seats.ports {
+        let Some(p) = d.ports.get_mut(sp.index) else {
+            continue;
+        };
+        if let Some(up) = sp.admin_up {
+            p.admin_up = up;
+        }
+        if let Some(m) = &sp.method {
+            p.method = match m.as_str() {
+                "manual" => IpMethod::Manual,
+                "dhcp" => IpMethod::Dhcp,
+                _ => IpMethod::None,
+            };
+        }
+        if let Some(st) = &sp.stats {
+            if let Some(v) = st.rx {
+                p.stats.rx = v;
+            }
+            if let Some(v) = st.tx {
+                p.stats.tx = v;
+            }
+            if let Some(v) = st.rx_err {
+                p.stats.rx_err = v;
+            }
+            if let Some(v) = st.tx_err {
+                p.stats.tx_err = v;
+            }
+            if let Some(v) = st.drops {
+                p.stats.drops = v;
+            }
+            if let Some(v) = st.cleared_tick {
+                p.stats.cleared_tick = v;
+            }
+        }
+    }
+    for r in &seats.routes {
+        match r.proto.as_deref() {
+            Some("static" | "s") | None => {}
+            Some(p) => return Err(format!("route proto {p} is not a seat")),
+        }
+        let (Some(prefix), Some(mask), Some(next_hop)) = (
+            parse_ip4(&r.prefix),
+            r.mask.as_deref().and_then(parse_ip4),
+            parse_ip4(&r.next_hop),
+        ) else {
+            continue;
+        };
+        if r.out_port >= d.ports.len() {
+            return Err(format!("route out_port {} has no port", r.out_port));
+        }
+        // The same path `ip route` runs: kind gate, contiguous mask, next-hop
+        // port resolution. The seat's own out_port/metric/learned_tick then
+        // overwrite — the document is the authority for those fields.
+        match config::add_route(d, prefix, mask, next_hop, r.ad, tick) {
+            Ok(()) => {
+                let net = [
+                    prefix[0] & mask[0],
+                    prefix[1] & mask[1],
+                    prefix[2] & mask[2],
+                    prefix[3] & mask[3],
+                ];
+                if let Some(row) = d.routes.iter_mut().find(|x| {
+                    x.proto == RouteProto::Static
+                        && x.prefix == net
+                        && x.mask == mask
+                        && x.next_hop == next_hop
+                }) {
+                    row.out_port = r.out_port;
+                    row.metric = r.metric;
+                    row.learned_tick = r.learned_tick;
+                }
+            }
+            Err(config::SetErr::KindGate) => {
+                // No `ip route` grammar for this kind. A host still carries
+                // the default route its `ip <addr> <mask> <gw>` command wrote.
+                if d.kind == DeviceKind::Host {
+                    d.routes.push(Route {
+                        prefix,
+                        mask,
+                        next_hop,
+                        out_port: r.out_port,
+                        connected: false,
+                        proto: RouteProto::Static,
+                        ad: r.ad.unwrap_or(1),
+                        metric: r.metric,
+                        learned_tick: r.learned_tick,
+                    });
+                }
+            }
+            Err(e) => return Err(format!("route {}: {e:?}", r.prefix)),
+        }
+    }
+    for m in &seats.mac {
+        let Some(mac) = parse_mac_u64(&m.mac) else {
+            continue;
+        };
+        if m.port >= d.ports.len() {
+            return Err(format!("mac port {} has no port", m.port));
+        }
+        d.mac_table.insert(
+            (mac, m.vlan),
+            MacEntry {
+                port: m.port,
+                created_tick: m.created_tick,
+                etype: etype(&m.etype),
+            },
+        );
+    }
+    for a in &seats.arp {
+        let (Some(ip), Some(mac)) = (parse_ip4(&a.ip), parse_mac_u64(&a.mac)) else {
+            continue;
+        };
+        if a.port >= d.ports.len() {
+            return Err(format!("arp port {} has no port", a.port));
+        }
+        d.arp_cache.insert(
+            ip,
+            ArpEntry {
+                mac,
+                port: a.port,
+                created_tick: a.created_tick,
+                etype: etype(&a.etype),
+            },
+        );
+    }
+    if d.kind == DeviceKind::Switch {
+        for (id, v) in &seats.vlans {
+            let Ok(vid) = id.parse::<u16>() else {
+                continue;
+            };
+            let row = d.vlans.entry(vid).or_insert_with(|| Vlan {
+                name: format!("VLAN{vid:04}"),
+                state: VlanState::Active,
+            });
+            if let Some(n) = &v.name {
+                row.name = n.clone();
+            }
+            if let Some(s) = &v.state {
+                row.state = if s == "suspend" {
+                    VlanState::Suspend
+                } else {
+                    VlanState::Active
+                };
+            }
+        }
+    }
+    for (k, on) in &seats.toggles {
+        let kind = match k.as_str() {
+            "domain_lookup" => ToggleKind::DomainLookup,
+            "ip_routing" => ToggleKind::IpRouting,
+            "proxy_arp" => ToggleKind::ProxyArp,
+            "directed_broadcast" => ToggleKind::DirectedBroadcast,
+            _ => continue,
+        };
+        let _ = config::set_toggle(d, kind, *on); // KindGate → the codec default already stands
+    }
+    if d.kind == DeviceKind::Router {
+        if let Some(o) = &seats.ospf {
+            if !d.ospf.on {
+                let _ = config::ospf_enter(d, o.pid);
+            } else {
+                d.ospf.pid = o.pid; // an `ip ospf area` port seat pinned pid 1 — the authored block wins
+            }
+            for n in &o.networks {
+                let (Some(net), Some(wild)) = (
+                    n.net.as_deref().and_then(parse_ip4),
+                    n.wild.as_deref().and_then(parse_ip4),
+                ) else {
+                    continue;
+                };
+                let _ = config::ospf_net_add(d, net, wild, n.area);
+            }
+            if let Some(rid) = o.router_id.as_deref().and_then(parse_ip4) {
+                let _ = config::ospf_router_id_set(d, rid);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The labfile/inspector ACE shape — one flat object per entry.
@@ -726,6 +1098,16 @@ mod tests {
         let (mut lab, dev) = lab_with_router();
         lab.restore();
         assert!(lab.cli_exec_json(dev, "show ?").is_err());
+    }
+
+    #[test]
+    fn traceroute_arms_a_job_like_ping() {
+        let (mut lab, dev) = lab_with_router();
+        assert!(lab.traceroute(dev, "10.0.0.1"));
+        assert!(!lab.traceroute(dev, "not-an-ip"));
+        assert!(!lab.traceroute(9, "10.0.0.1"));
+        lab.set_power(dev, false);
+        assert!(!lab.traceroute(dev, "10.0.0.1"));
     }
 
     #[test]
@@ -956,5 +1338,150 @@ mod tests {
         assert_eq!(d.name, "R1");
         assert!(d.acls.is_empty());
         assert_eq!(lab.cli_prompt(dev).unwrap(), "R1>");
+    }
+
+    #[test]
+    fn apply_device_fields_lands_every_seat() {
+        let (mut lab, dev) = lab_with_router();
+        lab.apply_device_fields(
+            dev,
+            r#"{
+                "ports": [{"index": 0, "admin_up": true, "method": "manual",
+                           "stats": {"rx": 42, "drops": 3}}],
+                "routes": [{"prefix": "192.168.9.0", "mask": "255.255.255.0",
+                            "next_hop": "10.0.0.2", "out_port": 0, "ad": 200,
+                            "metric": 7, "learned_tick": 99}],
+                "arp": [{"ip": "10.0.0.9", "mac": "1122.3344.5566", "port": 0,
+                         "created_tick": 5, "etype": "static"}],
+                "toggles": {"directed_broadcast": true, "routing_enabled": false},
+                "ospf": {"pid": 7, "router_id": "9.9.9.9",
+                         "networks": [{"net": "10.0.0.0", "wild": "0.0.0.255", "area": 2}]}
+            }"#,
+        )
+        .unwrap();
+        let d = &lab.topo.devices[&dev];
+        assert!(d.ports[0].admin_up, "router port authored up");
+        assert_eq!(d.ports[0].method, netlab_core::device::IpMethod::Manual);
+        assert_eq!(d.ports[0].stats.rx, 42);
+        assert_eq!(d.ports[0].stats.drops, 3);
+        let r = d
+            .routes
+            .iter()
+            .find(|r| r.proto == netlab_core::device::RouteProto::Static)
+            .unwrap();
+        assert_eq!(r.prefix, [192, 168, 9, 0]);
+        assert_eq!(r.ad, 200);
+        assert_eq!(r.metric, 7);
+        assert_eq!(r.learned_tick, 99);
+        let arp = d.arp_cache.get(&[10, 0, 0, 9]).unwrap();
+        assert_eq!(arp.mac, 0x1122_3344_5566);
+        assert_eq!(arp.etype, netlab_core::device::EntryType::Static);
+        assert!(d.toggles.directed_broadcast, "gated toggle applies");
+        assert!(d.toggles.routing_enabled, "constructor capability never rewrites");
+        assert!(d.ospf.on);
+        assert_eq!(d.ospf.pid, 7);
+        assert_eq!(d.ospf.router_id.value, [9, 9, 9, 9]);
+        assert!(d.ospf.router_id.explicit);
+        assert_eq!(d.ospf.nets.len(), 1);
+        assert_eq!(d.ospf.nets[0].area, 2);
+        assert!(lab.apply_device_fields(9, "{}").is_err(), "missing session");
+    }
+
+    #[test]
+    fn apply_device_fields_kind_gates_and_switch_seats() {
+        let mut lab = NetLab::new();
+        let host = lab.add_device("host", "H1", 0.0, 0.0);
+        let sw = lab.add_device("switch", "S1", 0.0, 0.0);
+        // ospf on a host: the gated fns refuse — nothing applies.
+        lab.apply_device_fields(host, r#"{"ospf":{"pid":1,"networks":[{"net":"10.0.0.0","wild":"0.0.0.255","area":0}]}}"#)
+            .unwrap();
+        assert!(!lab.topo.devices[&host].ospf.on);
+        // switch: mac rows + vlan seats land.
+        lab.apply_device_fields(
+            sw,
+            r#"{
+                "mac": [{"mac": "aabb.ccdd.eeff", "port": 2, "vlan": 10,
+                         "created_tick": 4, "etype": "static"}],
+                "vlans": {"10": {"name": "users", "state": "suspend"},
+                          "20": {}}
+            }"#,
+        )
+        .unwrap();
+        let d = &lab.topo.devices[&sw];
+        let e = d.mac_table.get(&(0xaabb_ccdd_eeff, 10)).unwrap();
+        assert_eq!(e.port, 2);
+        assert_eq!(d.vlans[&10].name, "users");
+        assert_eq!(
+            d.vlans[&10].state,
+            netlab_core::device::VlanState::Suspend
+        );
+        assert_eq!(d.vlans[&20].name, "VLAN0020", "empty seat names itself");
+        assert_eq!(
+            d.vlans[&20].state,
+            netlab_core::device::VlanState::Active
+        );
+    }
+
+    #[test]
+    fn apply_device_fields_rejects_bad_seats_whole() {
+        let (mut lab, dev) = lab_with_router();
+        // out-of-range out_port: clean Err, and nothing applied — a raw index
+        // reaching emit_ip's ports[route.out_port] would panic.
+        assert!(lab
+            .apply_device_fields(
+                dev,
+                r#"{"toggles":{"proxy_arp":false},
+                    "routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":999}]}"#,
+            )
+            .is_err());
+        let d = &lab.topo.devices[&dev];
+        assert!(d.routes.is_empty(), "rejected seat must not partially apply");
+        assert!(d.toggles.proxy_arp, "rejected seat must not partially apply");
+        // NetLab stays usable: a good call lands right after the bad one.
+        lab.apply_device_fields(
+            dev,
+            r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(lab.topo.devices[&dev].routes[0].out_port, 1);
+        // non-integer / negative port seats fail the serde decode.
+        assert!(lab
+            .apply_device_fields(dev, r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":1e30}]}"#)
+            .is_err());
+        assert!(lab
+            .apply_device_fields(dev, r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":-1}]}"#)
+            .is_err());
+        // a typo'd seat key is an Err, not a silent drop.
+        assert!(lab.apply_device_fields(dev, r#"{"routs":[]}"#).is_err());
+        assert!(lab
+            .apply_device_fields(dev, r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":0,"proto":"ospf"}]}"#)
+            .is_err());
+        // mac/arp seat ports are validated the same way.
+        assert!(lab
+            .apply_device_fields(dev, r#"{"mac":[{"mac":"aabb.ccdd.eeff","port":99}]}"#)
+            .is_err());
+        assert!(lab
+            .apply_device_fields(dev, r#"{"arp":[{"ip":"10.0.0.9","mac":"aabb.ccdd.eeff","port":99}]}"#)
+            .is_err());
+        // a non-contiguous mask rides the same setter `ip route` does.
+        assert!(lab
+            .apply_device_fields(dev, r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.0.255","next_hop":"10.0.0.2","out_port":0}]}"#)
+            .is_err());
+        // a host's authored default route still lands — its own grammar path.
+        let host = lab.add_device("host", "H1", 0.0, 0.0);
+        lab.apply_device_fields(
+            host,
+            r#"{"routes":[{"prefix":"0.0.0.0","mask":"0.0.0.0","next_hop":"10.0.0.1","out_port":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!(lab.topo.devices[&host].routes.len(), 1);
+        // a route seat on a switch rides the modeful gate the grammar uses.
+        let sw = lab.add_device("switch", "S1", 0.0, 0.0);
+        lab.apply_device_fields(
+            sw,
+            r#"{"routes":[{"prefix":"10.9.0.0","mask":"255.255.255.0","next_hop":"10.0.0.2","out_port":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!(lab.topo.devices[&sw].routes.len(), 1);
     }
 }

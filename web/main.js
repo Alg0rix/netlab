@@ -3,9 +3,9 @@ import { IOSNode, iosArgs, detectIosPlatform } from './ios.js';
 import { VMNode, VM_DEFAULTS, sniffImage } from './vm.js';
 import { TEMPLATES, tpl, iconSVG, iconImage, preloadIcons, ifName as ifNameFor, UI } from './icons.js';
 import { dissect, hexRows, toPcap, TICK_MS, matchFilter, protoClass, craftFrame, tcpFlow } from './capture.js';
-import { SimShell } from './cli.js';
+import { SimShell, cliEngine, isMissingSession, parse_event } from './cli.js';
 import { images, nvram, disks, persistStorage, newUid, autosave, prefs, download, pickFile, snapshots } from './store.js';
-import { emitLab, parseLab } from './labyaml.js';
+import { emitLab, parseLab, decodeLab, encodeNode, applySeats } from './labyaml.js';
 import { toast, modal, confirmBox, ask, openMenu, closeMenu, ico, hydrateIcons } from './ui.js';
 import { addTab, activateTab, removeTab, hasTab, refreshTabs } from './consolewin.js';
 import { LEVEL_META, allTemplates, userTemplates, renderTemplatePreviewSVG } from './templates.js';
@@ -22,7 +22,7 @@ window.netlab = { get lab() { return lab; }, get view() { return { ...view }; },
 
 /* ════════════════════════════ state ════════════════════════════ */
 
-const meta = new Map();      // devId -> { tpl, image? }
+const meta = new Map();      // devId -> { tpl, image?, startup?, startupBoot? }
 window.netlab.meta = meta;
 const emus = new Map();      // devId -> IOSNode | VMNode (emulated nodes)
 window.netlab.emus = emus;
@@ -67,7 +67,7 @@ const P = {
 
 const events = [];           // { n, tick, device, link, kind, msg, cat, node, via }
 let evSeq = 0;
-const evFilter = { cats: new Set(['ARP', 'ICMP', 'L2', 'L4', 'EXT', 'SYS']), dropsOnly: false, q: '' };
+const evFilter = { cats: new Set(['ARP', 'ICMP', 'L2', 'L4', 'EXT', 'SYS']), warnOnly: false, q: '' };
 let evSelected = null;
 
 const caps = new Map();      // linkId -> { name, packets: [], paused }
@@ -97,6 +97,16 @@ const ifName = (id, i) => {
   if (tplOf(id) === 'ios-sw' && meta.get(id)?.iosPlatform !== '7200') return `fa1/${i}`; // NM-16ESW
   return ifNameFor(tplOf(id), i, portCount(id));
 };
+const ifNames = id => Array.from({ length: portCount(id) }, (_, i) => ifName(id, i));
+// cli_set_ifnames is die-class on a non-canonical name — a throw inside a
+// &mut self wasm export poisons the whole NetLab object. Veto names outside
+// the canonical family (type-word head + digit/slash tail — the IfMap::new
+// rule) so an icon-derived display name can never reach the export.
+const canonIf = n => {
+  const i = n.search(/\d/);
+  return i > 0 && /^(g|fa|e|eth|vl)$/i.test(n.slice(0, i)) && /^[\d/]+$/.test(n.slice(i));
+};
+const setIfNames = (id, names) => { if (names.every(canonIf)) lab.cli_set_ifnames(id, names); };
 const portCount = id => {
   const d = byId.get(id);
   const t = tpl(tplOf(id));
@@ -118,6 +128,7 @@ function setNodePorts(id, count, noHist) {
   m.ports = n;
   if (isVM(id)) m.nics = n;
   refresh();
+  if (d.kind !== 'ext') setIfNames(id, ifNames(id));   // port set changed — rebind the IfMap
   renderAll();
   dirty();
 }
@@ -153,35 +164,45 @@ function serialize() {
   return {
     format: 'netlab', version: 1, name: labName,
     view: { ...view },
-    nodes: snap.devices.map(d => ({
-      id: d.id, tpl: tplOf(d.id), name: d.name, x: Math.round(d.x), y: Math.round(d.y),
-      powered: d.powered, image: meta.get(d.id)?.image ?? null, uid: meta.get(d.id)?.uid,
-      portCount: portCount(d.id),
-      ...(isVM(d.id) ? { vm: { ram: meta.get(d.id).ram, diskMB: meta.get(d.id).diskMB, nic: meta.get(d.id).nic, nics: portCount(d.id) } } : {}),
-      ports: d.ports.slice(0, portCount(d.id)).map(p => {
-        const o = {};
-        if (p.ip) { o.ip = p.ip; o.mask = p.mask; }
-        if (p.nat) o.nat = p.nat;
-        if (p.trunk) o.trunk = true;
-        if (p.access_vlan && p.access_vlan !== 1) o.access_vlan = p.access_vlan;
-        if (p.native_vlan && p.native_vlan !== 1) o.native_vlan = p.native_vlan;
-        if (p.allowed) o.allowed = p.allowed;
-        if (p.helper) o.helper = p.helper;
-        if (p.in_acl) o.in_acl = p.in_acl;
-        if (p.out_acl) o.out_acl = p.out_acl;
-        if (p.ospf_area != null) o.ospf_area = p.ospf_area;
-        return Object.keys(o).length ? o : null;
-      }),
-      routes: (d.routes || []).filter(r => r.proto !== 'O'),
-      acls: d.acls || [],
-      ospf: d.ospf_id ? { id: d.ospf_id, nets: d.ospf_nets || [] } : null,
-      startup: meta.get(d.id)?.startup || '',
-      startupBoot: !!meta.get(d.id)?.startupBoot,
-      svc: { dhcp: !!d.svc_dhcp, dns: !!d.svc_dns, http: !!d.svc_http },
-      resolver: d.resolver || '',
-      dns: d.dns_records || [],
-      static_nat: d.static_nat || [],
-    })),
+    nodes: snap.devices.map(d => {
+      const m = meta.get(d.id);
+      // Live snap → canonical seats through the codec's own emit — key names
+      // and default-suppression stay identical to the YAML save.
+      const enc = encodeNode({
+        id: d.id, tpl: tplOf(d.id), name: d.name, x: Math.round(d.x), y: Math.round(d.y),
+        powered: d.powered,
+        startup: m?.startup, startupBoot: !!m?.startupBoot,
+        ports: d.ports.slice(0, portCount(d.id)),
+        routes: d.routes || [],
+        mac_table: d.mac_table || [], arp_table: d.arp_table || [],
+        vlans: d.vlans ?? undefined, toggles: d.toggles, ospf: d.ospf ?? undefined,
+      });
+      const n = {
+        id: d.id, tpl: enc.tpl, name: enc.name, x: enc.x, y: enc.y,
+        powered: d.powered,
+        image: m?.image ?? null, uid: m?.uid,
+        portCount: portCount(d.id),
+        ...(isVM(d.id) ? { vm: { ram: m.ram, diskMB: m.diskMB, nic: m.nic, nics: portCount(d.id) } } : {}),
+        ...(enc.meta ? { meta: enc.meta } : {}),
+        // JSON save keeps access lists, their bindings, and the 1:1 maps —
+        // the seats the YAML form deliberately leaves to meta.startup.
+        acls: d.acls || [],
+        static_nat: (d.nat?.statics ?? []).map(s => ({ inside: s.inside_local })),
+        svc: { dhcp: !!d.svc_dhcp, dns: !!d.svc_dns, http: !!d.svc_http },
+        resolver: d.resolver || '',
+        dns: d.dns_records || [],
+      };
+      for (const k of ['ports', 'routes', 'mac', 'arp', 'vlans', 'toggles', 'ospf']) {
+        if (enc[k] != null) n[k] = enc[k];
+      }
+      d.ports.slice(0, portCount(d.id)).forEach((p, i) => {
+        if (!p.in_acl && !p.out_acl) return;
+        const row = (n.ports ??= [])[i] ??= {};
+        if (p.in_acl) row.in_acl = p.in_acl;
+        if (p.out_acl) row.out_acl = p.out_acl;
+      });
+      return n;
+    }),
     links: snap.links.map(l => ({
       a: l.a, ap: l.a_port, b: l.b, bp: l.b_port, up: l.up,
       delay: l.delay, jitter: l.jitter, loss: l.loss, mtu: l.mtu, speed: l.speed,
@@ -204,10 +225,13 @@ function restore(data) {
   lab = new NetLab();
   simTick = 0;
 
-  labName = data?.name || 'Untitled lab';
+  // The ONE decode site — .netlab.json, YAML, autosave, undo and templates
+  // all land here canonical before a single setter runs.
+  data = decodeLab(data);
+  labName = data.name || 'Untitled lab';
   const idmap = new Map();
   let minted = false;   // nodes from older saves get a uid now — persist it
-  for (const n of data?.nodes ?? []) {
+  for (const n of data.nodes) {
     if (!n.uid) minted = true;
     const t = tpl(n.tpl) ?? tpl('pc');
     const id = lab.add_device(t.kind, n.name, n.x, n.y);
@@ -215,7 +239,7 @@ function restore(data) {
     const savedPorts = n.portCount ?? n.vm?.nics ?? (n.ports?.length ? Math.max(t.ports, n.ports.length) : t.ports);
     registerNode(id, t.id, n.name, n.image, n.uid, n.vm, savedPorts);
     const m = meta.get(id);
-    if (n.startup) m.startup = n.startup;
+    if (typeof n.startup === 'string') m.startup = n.startup;   // "" decodes as Some("")
     if (n.startupBoot) m.startupBoot = true;
     for (const a of n.acls ?? []) {
       for (const e of a.entries ?? []) {
@@ -235,7 +259,6 @@ function restore(data) {
       if (p.out_acl) lab.set_access_group(id, i, p.out_acl, 'out');
       if (p.ospf_area != null) lab.ospf_interface(id, i, p.ospf_area);
     });
-    for (const net of n.ospf?.nets ?? []) lab.ospf_network(id, net.prefix, net.wild, net.area || 0);
     for (const s of n.static_nat ?? []) {
       const proto = s.proto === 6 || s.proto === 'tcp' ? 'tcp' : s.proto === 17 || s.proto === 'udp' ? 'udp' : 'ip';
       lab.nat_static(id, s.inside, proto, s.inside_port || 0, s.outside_port || 0);
@@ -243,8 +266,16 @@ function restore(data) {
     if (n.svc) lab.set_services(id, !!n.svc.dhcp, !!n.svc.dns, !!n.svc.http);
     for (const rec of n.dns ?? []) if (rec?.[0] && rec?.[1]) lab.add_dns_record(id, rec[0], rec[1]);
     if (n.resolver) lab.set_dns(id, n.resolver);
-    for (const r of n.routes ?? []) if (r.proto !== 'O') lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
+    // Every remaining codec seat — admin_up, method, stats, mac, arp, static
+    // routes, vlans, toggles, ospf — lands before the baseline so a reload
+    // returns to the authored state. ext nodes carry no engine config. A bad
+    // seat set skips THIS device's apply and surfaces; the load must not die
+    // half-built on one malformed node.
+    if (t.kind !== 'ext') {
+      try { lab.apply_device_fields(id, JSON.stringify(applySeats(n))); }
+      catch (e) { toast(`${n.name || `#${id}`}: ${e?.message ?? e}`, 'err'); }
+    }
     lab.baseline_commit(id);
   }
   for (const l of data?.links ?? []) {
@@ -264,6 +295,11 @@ function restore(data) {
   $('#lab-name').value = labName;
   refresh();
   renderAll();
+  // The load itself is the undo boundary — the caller checkpointed before
+  // restore(); a per-device replay checkpoint would push N undo entries.
+  histLock = true;
+  try { for (const d of snap.devices) applyStartup(d.id); }   // mirror sync + gated replay — one path for every load
+  finally { histLock = false; }
   if (minted) dirty();
 }
 
@@ -304,6 +340,7 @@ function dirty() {
   $('#save-state').textContent = 'Saving…';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    saveTimer = null;
     autosave.save(serialize());
     $('#save-state').textContent = 'Saved locally';
   }, 500);
@@ -321,6 +358,8 @@ function registerNode(id, tplId, name, image = null, uid = null, vm = null, port
   const initialPorts = ports ?? vm?.nics ?? t?.ports ?? 1;
   const m = { tpl: tplId, image, uid: uid || newUid(), nvSaved: null, ports: initialPorts };
   meta.set(id, m);
+  // inject canonical port names into the CLI session — IfMap binds names[i] to PortId(i)
+  if (t?.kind !== 'ext') setIfNames(id, Array.from({ length: initialPorts }, (_, i) => ifNameFor(tplId, i, initialPorts)));
   if (t?.emu === 'v86') {
     Object.assign(m, VM_DEFAULTS[tplId] ?? VM_DEFAULTS.x86, vm ?? {}, { ports: initialPorts, nics: initialPorts, diskSaved: null, diskSize: 0 });
     const node = new VMNode(id, name);
@@ -386,7 +425,7 @@ function addNode(tplId, x, y, noHist) {
   const name = nextName(t.prefix);
   const id = lab.add_device(t.kind, name, snapV(x), snapV(y));
   registerNode(id, t.id, name);
-  if (STARTUP[t.id]) meta.get(id).startup = STARTUP[t.id];
+  if (STARTUP[t.id]) { meta.get(id).startup = STARTUP[t.id]; setStartupText(id, STARTUP[t.id]); }
   if (t.id === 'server') lab.set_services(id, true, true, true);
   refresh();
   selectOnly('node', id);
@@ -442,7 +481,7 @@ async function startNode(id) {
   if (d.kind !== 'ext') {
     lab.set_power(id, true);
     refresh(); renderAll(); dirty();
-    if (meta.get(id)?.startupBoot) applyStartup(id, true);
+    applyStartup(id);
     return;
   }
   if (isVM(id)) return startVM(id);
@@ -511,17 +550,53 @@ function stopNode(id) {
 function reloadNode(id) {
   const d = byId.get(id);
   if (!d || d.kind === 'ext') return;
-  lab.set_power(id, false); lab.set_power(id, true);
+  const wasPowered = d.powered;       // restore_baseline reinstates the authored flag — reload keeps the live state
+  lab.reset_config(id);               // restores the authored baseline — the replay target
+  lab.set_power(id, wasPowered);      // a running device reboots and comes back up; a stopped one stays down
   refresh(); renderAll();
   toast(`${d.name} reloaded — ARP/MAC tables cleared`);
-  if (meta.get(id)?.startupBoot) applyStartup(id, true);
+  applyStartup(id);                   // mirror → startup_gate → cli_script
 }
 
-function applyStartup(id, quiet) {
+// Load-path honesty: per-line replay failures land in errors[]; they reach the
+// operator, never a silent swallow.
+function scriptErrors(id, r) {
+  if (!r?.errors?.length) return;
+  const name = byId.get(id)?.name ?? `#${id}`;
+  const shown = r.errors.slice(0, 3).map(e => `line ${e.lineno}: ${e.msg}`).join(' · ');
+  toast(`${name}: startup script — ${r.errors.length} line${r.errors.length === 1 ? '' : 's'} failed (${shown}${r.errors.length > 3 ? ', …' : ''})`, 'err');
+}
+
+// One guarded mirror write — the missing-session Err carries the adapter's
+// semantics here too: orphan the open console's shell, never rethrow it.
+const setStartupText = (id, text) => {
+  try { lab.cli_set_startup(id, text); }
+  catch (e) { if (!isMissingSession(e)) throw e; consoles.get(id)?.shell?.deleted(); }
+};
+
+// Boot/load replay. The mirror syncs unconditionally (text exists → mirror,
+// absent → clear with null, never ""); the script leg runs only under
+// startup_gate ≡ meta.startupBoot == true ∧ meta.startup is a string, and
+// only on sim nodes — ext consoles take the script by paste instead.
+// Replay target: the document-decoded authored state at load / the
+// reset_config-restored baseline at reload — never bare constructor defaults.
+function applyStartup(id) {
+  const m = meta.get(id);
+  setStartupText(id, m?.startup ?? null);
+  if (m?.startupBoot !== true || typeof m?.startup !== 'string' || byId.get(id)?.kind === 'ext') return;
+  checkpoint();                       // unconditional before every cli_script — dedup absorbs reads
+  const r = lab.cli_script(id, m.startup);
+  scriptErrors(id, r);
+  if (r?.mutated) { refresh(); renderInspectorSoon(); dirty(); }
+}
+
+// Inspector Apply: paste the script into the node now — ungated, explicit.
+function pasteStartup(id) {
   const m = meta.get(id);
   const d = byId.get(id);
   const text = (m?.startup ?? '').replace(/\r/g, '');
-  if (!d || !text.trim()) { if (!quiet) toast('Startup script is empty', 'err'); return; }
+  if (!d || !text.trim()) return toast('Startup script is empty', 'err');
+  setStartupText(id, m.startup);
   if (d.kind === 'ext') {
     const emu = emus.get(id);
     if (!emu || nodeState(id) !== 'running') return toast(`${d.name}: start it, wait for a prompt, then paste`, 'err');
@@ -531,9 +606,9 @@ function applyStartup(id, quiet) {
   }
   if (nodeState(id) !== 'running') return toast(`${d.name}: start it before applying the script`, 'err');
   if (!consoles.has(id)) consoles.set(id, simConsole(id));
-  const lines = text.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('!') && !s.startsWith('#'));
-  for (const line of lines) consoles.get(id).shell.run(line);
-  if (!quiet) toast(`${d.name}: applied ${lines.length} command${lines.length === 1 ? '' : 's'}`);
+  checkpoint();                       // unconditional — the adapter's own push dedups to one
+  consoles.get(id).shell.paste(text); // the adapter's batch path: render, errors, cli_prompt
+  toast(`${d.name}: applied the startup script`);
   refresh(); dirty();
 }
 
@@ -587,21 +662,22 @@ function setCapture(id, on) {
 
 /* ════════════════════════════ simulation loop ════════════════════════════ */
 
+// Engine event vocabulary (EvKind): link, ping, trace, dhcp, syslog — plus
+// the app-local 'sys'. Categories only color and group the rows.
 function catOf(ev) {
   switch (ev.kind) {
-    case 'arp_req': case 'arp_rep': return 'ARP';
-    case 'echo_req': case 'echo_rep': case 'deliver': case 'exceed': return 'ICMP';
-    case 'ospf': return 'SYS';
-    case 'learn': case 'flood': case 'forward': return 'L2';
-    case 'dhcp': case 'dns': case 'tcp': case 'http': case 'udp': return 'L4';
-    case 'ext_tx': case 'ext_rx': return 'EXT';
-    case 'sys': return 'SYS';
+    case 'ping': case 'trace': return 'ICMP';
+    case 'link': return 'L2';
+    case 'dhcp': return 'L4';
+    case 'syslog': case 'sys': return 'SYS';
     default: return /ARP/.test(ev.msg) ? 'ARP' : /ICMP|echo|reply/i.test(ev.msg) ? 'ICMP' : /DHCP|DNS|TCP|HTTP|UDP/i.test(ev.msg) ? 'L4' : /eth\[|ext/i.test(ev.msg) ? 'EXT' : 'L2';
   }
 }
 const CAT_COLOR = { ARP: 'p-arp', ICMP: 'p-icmp', L2: 'p-l2', L4: 'p-tcp', EXT: 'p-ext', SYS: 'muted' };
 
-function pushEvent(ev) {
+// Event bookkeeping — the log row + port flash. The console render is a
+// separate channel so a drain burst can batch it.
+function recordEvent(ev) {
   ev.n = ++evSeq;
   ev.cat = catOf(ev);
   ev.node = byId.get(ev.device)?.name ?? '';
@@ -609,12 +685,17 @@ function pushEvent(ev) {
   ev.via = l ? (() => { const p = peerOf(l, ev.device); return p.dev === ev.device ? '' : `${byId.get(p.dev)?.name ?? '?'}`; })() : '';
   events.push(ev);
   if (events.length > 5000) events.splice(0, 1000);
-  if (ev.device != null && ev.kind !== 'learn') {
-    flashes.push({ dev: ev.device, color: ev.kind === 'drop' ? C.bad : ev.kind === 'deliver' ? C.ok : C[CAT_COLOR[ev.cat]] ?? C.accent, t0: performance.now() });
+  if (ev.device != null) {
+    const down = ev.kind === 'link' && /to down/.test(ev.msg);
+    flashes.push({ dev: ev.device, color: down ? C.bad : C[CAT_COLOR[ev.cat]] ?? C.accent, t0: performance.now() });
     if (flashes.length > 60) flashes.shift();
   }
-  for (const c of consoles.values()) c.shell?.onEvent(ev);
   evDirty = true;
+}
+
+function pushEvent(ev) {
+  recordEvent(ev);
+  for (const c of consoles.values()) c.shell?.onEvent(ev);
 }
 
 // Fabric clock. Realtime runs ~1 tick per millisecond on its own timer so real
@@ -640,9 +721,13 @@ function runTicks(n) {
         capDirty = true;
       }
     }
-    for (const c of consoles.values()) c.shell?.onTick(simTick);
+    for (const c of consoles.values()) c.shell?.onTick();
   }
-  for (const ev of JSON.parse(lab.drain_events())) pushEvent(ev);
+  // One batch render per console per pump — a burst writes its spans in a
+  // single fragment instead of paying a layout read per event.
+  const evs = JSON.parse(lab.drain_events());
+  for (const ev of evs) recordEvent(ev);
+  for (const c of consoles.values()) c.shell?.onEvents?.(evs);
   snapDirty = true;
 }
 const tick = () => { runTicks(1); refresh(); snapDirty = false; };
@@ -1577,11 +1662,14 @@ function saveYaml() {
 async function saveFile() {
   const name = (labName || 'lab').replace(/[^\w.-]+/g, '_');
   const data = serialize();
-  // IOS configs travel with the lab file (NVRAM, base64)
+  // IOS configs travel with the lab file (NVRAM, base64); uids do not — they are
+  // transient IndexedDB keys (F-20) and import re-mints + re-keys them.
   for (const n of data.nodes) {
-    if (n.tpl !== 'ios' || !n.uid) continue;
-    const rec = await nvram.get(n.uid);
-    if (rec) n.nvram = b64(rec.data);
+    if (n.tpl === 'ios' && n.uid) {
+      const rec = await nvram.get(n.uid);
+      if (rec) n.nvram = b64(rec.data);
+    }
+    delete n.uid;
   }
   download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `${name}.netlab.json`);
 }
@@ -1715,6 +1803,7 @@ function templateMarketplace(initialTab = 'all', openSave = false) {
     const tags = $('[data-s-tags]', body).value.split(',').map(s => s.trim()).filter(Boolean);
     const data = serialize();
     data.name = title;
+    for (const n of data.nodes) delete n.uid;   // F-20: a template must not share the lab's store keys
     userTemplates.add({
       id: 'user-' + Date.now().toString(36),
       title, level, category, summary,
@@ -1729,7 +1818,9 @@ function templateMarketplace(initialTab = 'all', openSave = false) {
   };
 
   const loadTpl = t => {
+    checkpoint();                                  // F-29: template load is undoable
     const data = t.build();
+    for (const n of data.nodes ?? []) delete n.uid;   // F-20: stored uids are transient — mint fresh on load
     restore(data);
     fit();
     dirty();
@@ -1739,6 +1830,7 @@ function templateMarketplace(initialTab = 'all', openSave = false) {
 
   const exportTpl = t => {
     const data = t.build();
+    for (const n of data.nodes ?? []) delete n.uid;   // F-20: transient store keys never ship
     const fname = (t.id || t.title || 'template').toLowerCase().replace(/[^\w.-]+/g, '_') + '.netlab.json';
     download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), fname);
   };
@@ -2304,10 +2396,16 @@ function startupSection(id, d, st) {
       <button class="btn sm primary" data-apply ${st === 'running' ? '' : 'disabled'}>Apply</button>
     </div></div>`);
   const ta = $('textarea', s);
-  ta.oninput = () => { m.startup = ta.value; dirty(); };
+  let startT = null;
+  ta.oninput = () => {
+    m.startup = ta.value;
+    clearTimeout(startT);
+    startT = setTimeout(() => setStartupText(id, m.startup ?? null), 300);   // mirror trails the keystrokes — "" is a real seat (Some("")), not absent
+    dirty();
+  };
   const boot = $('[data-boot]', s);
   if (boot) boot.onchange = () => { checkpoint(); m.startupBoot = boot.checked; dirty(); };
-  $('[data-apply]', s).onclick = () => { m.startup = ta.value; applyStartup(id, false); };
+  $('[data-apply]', s).onclick = () => { m.startup = ta.value; pasteStartup(id); };
   return s;
 }
 
@@ -2759,14 +2857,14 @@ function eventsPane() {
   const pane = h(`<div class="pane">
     <div class="pane-bar">
       ${['ARP', 'ICMP', 'L2', 'L4', 'EXT', 'SYS'].map(c => `<button class="chip ${evFilter.cats.has(c) ? '' : 'off'}" data-cat="${c}" style="--c:var(--${CAT_COLOR[c]})">${c}</button>`).join('')}
-      <button class="chip ${evFilter.dropsOnly ? '' : 'off'}" data-drops style="--c:var(--bad)">Drops only</button>
+      <button class="chip ${evFilter.warnOnly ? '' : 'off'}" data-drops style="--c:var(--bad)">Warnings only</button>
       <span class="spacer"></span>
       <label class="search">${ico('search')}<input placeholder="Filter text" value="${esc(evFilter.q)}" /></label>
       <button class="btn sm ghost" data-clear>${ico('trash')}Clear</button>
     </div>
     <div class="tbl-wrap"><table class="ev"><colgroup><col style="width:56px"><col style="width:84px"><col style="width:110px"><col style="width:110px"><col style="width:64px"><col></colgroup>
       <thead><tr><th>#</th><th>Time</th><th>Device</th><th>Via link to</th><th>Type</th><th>What happened</th></tr></thead><tbody></tbody></table>
-      <div class="pane-empty" hidden><div><b>No events yet</b>Ping something — every ARP, switch decision and drop shows up here.</div></div></div>
+      <div class="pane-empty" hidden><div><b>No events yet</b>Ping something — link changes, probe results and syslog notices show up here.</div></div></div>
   </div>`);
   $$('[data-cat]', pane).forEach(b => b.onclick = () => {
     const c = b.dataset.cat;
@@ -2774,7 +2872,7 @@ function eventsPane() {
     b.classList.toggle('off');
     renderEvents(true);
   });
-  $('[data-drops]', pane).onclick = e => { evFilter.dropsOnly = !evFilter.dropsOnly; e.currentTarget.classList.toggle('off'); renderEvents(true); };
+  $('[data-drops]', pane).onclick = e => { evFilter.warnOnly = !evFilter.warnOnly; e.currentTarget.classList.toggle('off'); renderEvents(true); };
   $('.search input', pane).oninput = e => { evFilter.q = e.target.value.toLowerCase(); renderEvents(true); };
   $('[data-clear]', pane).onclick = () => { events.length = 0; renderEvents(true); renderDockTabs(); };
   evTbody = $('tbody', pane);
@@ -2783,14 +2881,18 @@ function eventsPane() {
   queueMicrotask(() => renderEvents(true));
   return pane;
 }
-const evVisible = ev => evFilter.cats.has(ev.cat) && (!evFilter.dropsOnly || ev.kind === 'drop') &&
+// Row class comes from the adapter's own parse table — warn → the red row,
+// a delivered ping glyph → the green one. Nothing invents a second mapping.
+const evCls = ev => parse_event(ev.kind, ev.msg).cls;
+const evVisible = ev => evFilter.cats.has(ev.cat) && (!evFilter.warnOnly || evCls(ev) === 'warn') &&
   (!evFilter.q || `${ev.msg} ${ev.node} ${ev.via}`.toLowerCase().includes(evFilter.q));
 
 function evRow(ev) {
+  const cls = evCls(ev);
   const tr = document.createElement('tr');
-  tr.className = (ev.kind === 'drop' ? 'drop' : ev.kind === 'deliver' ? 'deliver' : '') + (evSelected === ev.n ? ' sel' : '');
-  const color = ev.kind === 'drop' ? 'var(--bad)' : `var(--${CAT_COLOR[ev.cat]})`;
-  const label = ev.kind === 'drop' ? 'DROP' : ev.kind === 'deliver' ? 'OK' : ev.cat;
+  tr.className = (cls === 'warn' ? 'drop' : cls === 'echo' && ev.msg === '!' ? 'deliver' : '') + (evSelected === ev.n ? ' sel' : '');
+  const color = cls === 'warn' ? 'var(--bad)' : `var(--${CAT_COLOR[ev.cat]})`;
+  const label = ev.cat;
   tr.innerHTML = `<td class="n">${ev.n}</td><td class="t">${(ev.tick * TICK_MS).toFixed(1)} ms</td><td>${esc(ev.node)}</td><td>${esc(ev.via)}</td>
     <td><span class="badge" style="--c:${color}">${label}</span></td><td class="msg" title="${esc(ev.msg)}">${esc(ev.msg.replace(/^[^:]+:\s*/, ''))}</td>`;
   tr.onclick = () => {
@@ -3068,11 +3170,20 @@ function termShell() {
   const out = $('.term-out', el);
   const write = (text, cls = '') => {
     if (text === '\x0c') { out.innerHTML = ''; return; }
+    write.batch([{ text, cls }]);
+  };
+  // One append + one scroll read per batch — the adapter's multi-line
+  // renders land as a single fragment, not a layout pass per line.
+  write.batch = spans => {
     const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    const sp = document.createElement('span');
-    if (cls) sp.className = cls;
-    sp.textContent = text;
-    out.append(sp);
+    const frag = document.createDocumentFragment();
+    for (const { text, cls } of spans) {
+      const sp = document.createElement('span');
+      if (cls) sp.className = cls;
+      sp.textContent = text;
+      frag.append(sp);
+    }
+    out.append(frag);
     while (out.childNodes.length > 4000) out.firstChild.remove();
     if (atBottom) out.scrollTop = out.scrollHeight;
   };
@@ -3081,42 +3192,34 @@ function termShell() {
 
 function simConsole(id) {
   const t = termShell();
+  // host facade {app, meta, lab} — the adapter reaches lab per call so a
+  // restore() swap stays live; refresh and dirty are split channels:
+  // CliResult.mutated gates refresh+dirty together, intents mark dirty alone.
   const app = {
-    get lab() { return lab; },
-    dev: i => byId.get(i), snap: () => snap, ifName, portCount, refresh: () => { refresh(); renderInspector(true); dirty(); },
+    dev: i => byId.get(i), snap: () => snap, ifName, ifNames, portCount,
+    refresh: () => { refresh(); renderInspector(true); },
+    dirty,
     realtime: () => mode === 'realtime',
     rename: (i, n) => rename(i, n),
     checkpoint,
   };
-  const shell = new SimShell(app, id, t.write);
+  // impl-stage engine switch — "legacy"|"core", default "core"; the cutover
+  // wave deletes the read. The legacy seat is gone with the monolith.
+  if (cliEngine() !== 'core') toast('cli.engine "legacy" has no path — the core adapter is the only shell', 'err');
+  const shell = new SimShell({ app, meta, get lab() { return lab; } }, id, t.write);
   t.bar.innerHTML = `<span>${esc(byId.get(id).name)} · ${esc(tpl(tplOf(id)).label)} shell</span><span class="spacer"></span><button class="btn sm" data-clear>${ico('trash')}Clear</button>`;
   $('[data-clear]', t.bar).onclick = () => t.write('\x0c');
-  shell.banner();
-  let hi = -1;
-  const setPrompt = () => { t.pr.textContent = shell.prompt(); };
-  setPrompt();
-  t.input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { shell.run(t.input.value); t.input.value = ''; hi = -1; setPrompt(); }
-    else if (e.key === 'ArrowUp') { if (shell.history.length) { hi = hi < 0 ? shell.history.length - 1 : Math.max(0, hi - 1); t.input.value = shell.history[hi]; } e.preventDefault(); }
-    else if (e.key === 'ArrowDown') { if (hi >= 0) { hi++; t.input.value = shell.history[hi] ?? ''; if (hi >= shell.history.length) hi = -1; } e.preventDefault(); }
-    else if (e.key === 'l' && e.ctrlKey) { t.write('\x0c'); e.preventDefault(); }
-    else if (e.key === 'c' && e.ctrlKey && shell.pingJob) { shell.pingJob.left = 0; shell.pings = []; t.write('^C\n'); e.preventDefault(); }
-    else if (e.key === 'Tab') {
-      // Tab completes like IOS/bash — and must never move focus out of the console
-      e.preventDefault();
-      const r = shell.complete(t.input.value);
-      if (r.list) { t.write(shell.prompt() + t.input.value + '\n', 'echo'); t.write(r.list.join('  ') + '\n'); }
-      t.input.value = r.line;
-    }
-    else if (e.key === '?') { shell.contextHelp(t.input.value); e.preventDefault(); }
+  // the adapter owns the cmdInput keymap (Enter/`?`/Tab/chords/arrows/paste)
+  // — keydown routes inside cli.js: Ctrl+Z→cli_key('ctrlz'), Ctrl+C→cli_key('ctrlc')
+  // + pingJob abort, `?`/Tab→value.slice(0, selectionStart), paste→cli_script batch
+  shell.attach({
+    shell: t.el.querySelector('.term'), input: t.input, pr: t.pr,
+    flash: () => { const el = t.el.querySelector('.term'); el.style.filter = 'brightness(1.35)'; setTimeout(() => { el.style.filter = ''; }, 90); },
   });
-  // clicking anywhere in the console (output, prompt row, gaps) puts the caret back in the input
-  t.el.querySelector('.term').addEventListener('mouseup', e => {
-    if (!getSelection().toString() && !e.target.closest('button')) t.input.focus();
-  });
+  shell.mount();
   return {
     shell, el: t.el,
-    focus: () => { setPrompt(); t.input.focus(); },
+    focus: () => t.input.focus(),
     scroll: () => { t.out.scrollTop = t.out.scrollHeight; },
   };
 }
@@ -3411,7 +3514,11 @@ function DEMO() {
 /* ════════════════════════════ start ════════════════════════════ */
 
 // best effort: flush running VM disks when the tab goes away (normally they save ~8 s after writes)
-addEventListener('pagehide', () => { for (const n of emus.values()) if (n.saveDisk && n.state === 'running') n.saveDisk(); });
+// F-22: a pending dirty() debounce must not outlive the page — flush the autosave too
+addEventListener('pagehide', () => {
+  for (const n of emus.values()) if (n.saveDisk && n.state === 'running') n.saveDisk();
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; autosave.save(serialize()); }
+});
 addEventListener('netlab-storage-blocked', () => toast('Close other netlab tabs — browser storage is locked by an older version. Images and configs are kept in memory until reload.', 'err'));
 applyPrefs();
 const sp = prefs.get('speed', 2);
