@@ -2,6 +2,7 @@
 
 use crate::device::{Ace, Acl, DeviceId, DeviceKind, NatRole, Route, RouteProto};
 use crate::parse_ip;
+use crate::LinkId;
 use crate::services::StaticNat;
 
 use super::Topology;
@@ -28,6 +29,32 @@ impl Topology {
                 d.power_on();
             } else {
                 d.power_off();
+            }
+        }
+        // Carrier ends at a powered-off PHY: refresh both ends of every
+        // attached port so the C1/C2 pair fires on both consoles.
+        let ports: Vec<(usize, LinkId)> = self
+            .devices
+            .get(&id)
+            .map(|d| {
+                d.ports
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| p.link.map(|l| (i, l)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (port, link) in ports {
+            let peer = self.links.get(&link).map(|l| {
+                if l.a.device == id {
+                    (l.b.device, l.b.port)
+                } else {
+                    (l.a.device, l.a.port)
+                }
+            });
+            self.refresh_link_state(id, port);
+            if let Some((pd, pp)) = peer {
+                self.refresh_link_state(pd, pp);
             }
         }
     }

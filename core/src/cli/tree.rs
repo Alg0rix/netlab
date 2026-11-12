@@ -1820,6 +1820,20 @@ static HOST_IP_KIDS: &[GNode] = &[
         emits: false,
     },
     l("dhcp", ActTag::HostDhcp, Some("DHCP")),
+    g(
+        Tok::Lit("dns"),
+        Some(ActTag::HostDns),
+        &[GNode {
+            tok: Tok::Ipv4,
+            help: Some("<server>"),
+            hidden: false,
+            act: Some(ActTag::HostDns),
+            kids: EMPTY_KIDS,
+            edge: Edge::None,
+            emits: false,
+        }],
+        Some("resolver"),
+    ),
 ];
 
 static HOST_SET: &[GNode] = &[GNode {
@@ -1857,6 +1871,137 @@ const fn host_extra(lit: &'static str, k: HostExtraKind) -> GNode {
     }
 }
 
+// `nc [-u] <ip> <port> [payload]` — the flag rides argv as Str("-u").
+static NC_PORT_KIDS: &[GNode] = &[GNode {
+    tok: Tok::Range { lo: 1, hi: 65535 },
+    help: Some("<port>"),
+    hidden: false,
+    act: Some(ActTag::HostNc),
+    kids: &[GNode {
+        tok: Tok::Line,
+        help: Some("[payload]"),
+        hidden: false,
+        act: Some(ActTag::HostNc),
+        kids: EMPTY_KIDS,
+        edge: Edge::None,
+        emits: false,
+    }],
+    edge: Edge::None,
+    emits: false,
+}];
+
+static NC_HOST: &[GNode] = &[GNode {
+    tok: Tok::Ipv4,
+    help: Some("<ip>"),
+    hidden: false,
+    act: None,
+    kids: NC_PORT_KIDS,
+    edge: Edge::None,
+    emits: false,
+}];
+
+static NC_KIDS: &[GNode] = &[
+    GNode {
+        tok: Tok::Lit("-u"),
+        help: Some("UDP"),
+        hidden: false,
+        act: None,
+        kids: NC_HOST,
+        edge: Edge::None,
+        emits: true,
+    },
+    GNode {
+        tok: Tok::Ipv4,
+        help: Some("<ip>"),
+        hidden: false,
+        act: None,
+        kids: NC_PORT_KIDS,
+        edge: Edge::None,
+        emits: false,
+    },
+];
+
+// `curl <ip[:port]> [port]` — the target parses in bind (ip or ip:port).
+static CURL_KIDS: &[GNode] = &[GNode {
+    tok: Tok::Word,
+    help: Some("<ip[:port]>"),
+    hidden: false,
+    act: Some(ActTag::HostCurl),
+    kids: &[GNode {
+        tok: Tok::Range { lo: 1, hi: 65535 },
+        help: Some("<port>"),
+        hidden: false,
+        act: Some(ActTag::HostCurl),
+        kids: EMPTY_KIDS,
+        edge: Edge::None,
+        emits: false,
+    }],
+    edge: Edge::None,
+    emits: false,
+}];
+
+static NSLOOKUP_KIDS: &[GNode] = &[GNode {
+    tok: Tok::Word,
+    help: Some("<name>"),
+    hidden: false,
+    act: Some(ActTag::HostNslookup),
+    kids: EMPTY_KIDS,
+    edge: Edge::None,
+    emits: false,
+}];
+
+static SERVER_ONOFF: &[GNode] = &[
+    gd("on", Some(ActTag::HostServerSvc), EMPTY_KIDS, Some("on")),
+    gd("off", Some(ActTag::HostServerSvc), EMPTY_KIDS, Some("off")),
+];
+
+// `server dns a <name> <ip>` — `a` is structural (not emitted into argv).
+static SERVER_DNS_A: &[GNode] = &[GNode {
+    tok: Tok::Word,
+    help: Some("<name>"),
+    hidden: false,
+    act: None,
+    kids: &[GNode {
+        tok: Tok::Ipv4,
+        help: Some("<ip>"),
+        hidden: false,
+        act: Some(ActTag::HostDnsRecord),
+        kids: EMPTY_KIDS,
+        edge: Edge::None,
+        emits: false,
+    }],
+    edge: Edge::None,
+    emits: false,
+}];
+
+static SERVER_DNS_KIDS: &[GNode] = &[
+    GNode {
+        tok: Tok::Lit("a"),
+        help: Some("A record"),
+        hidden: false,
+        act: None,
+        kids: SERVER_DNS_A,
+        edge: Edge::None,
+        emits: false,
+    },
+    gd("on", Some(ActTag::HostServerSvc), EMPTY_KIDS, Some("on")),
+    gd("off", Some(ActTag::HostServerSvc), EMPTY_KIDS, Some("off")),
+];
+
+static SERVER_KIDS: &[GNode] = &[
+    gd("dhcp", None, SERVER_ONOFF, Some("DHCP server")),
+    GNode {
+        tok: Tok::Lit("dns"),
+        help: Some("DNS server"),
+        hidden: false,
+        act: None,
+        kids: SERVER_DNS_KIDS,
+        edge: Edge::None,
+        emits: true,
+    },
+    gd("http", None, SERVER_ONOFF, Some("HTTP server")),
+];
+
 pub static HOST_ROOT: &[GNode] = &[
     GNode {
         tok: Tok::Lit("ip"),
@@ -1889,10 +2034,10 @@ pub static HOST_ROOT: &[GNode] = &[
         emits: false,
     },
     host_extra("traffic", HostExtraKind::Traffic),
-    host_extra("nc", HostExtraKind::Nc),
-    host_extra("curl", HostExtraKind::Curl),
-    host_extra("server", HostExtraKind::Server),
-    host_extra("nslookup", HostExtraKind::Nslookup),
+    g(Tok::Lit("nc"), None, NC_KIDS, Some("nc")),
+    g(Tok::Lit("curl"), None, CURL_KIDS, Some("curl")),
+    g(Tok::Lit("server"), None, SERVER_KIDS, Some("server")),
+    g(Tok::Lit("nslookup"), None, NSLOOKUP_KIDS, Some("nslookup")),
 ];
 
 use crate::device::DeviceKind;

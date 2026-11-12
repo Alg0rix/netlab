@@ -195,15 +195,46 @@ fn host_flat_root() {
     assert_eq!(d.ports[0].ip, Some(([10, 0, 0, 2], [255, 255, 255, 0])));
     let r = exec(&mut c, &mut d, "ping 10.0.0.1");
     assert!(r.out.iter().any(|o| matches!(o, Op::Intent(Intent::Ping { .. }))));
-    // host extras → honest unsupported errors
-    for tool in ["nc", "curl", "nslookup", "traffic", "server"] {
+    // wired host tools want their args
+    for tool in ["nc", "curl", "nslookup", "server"] {
         let r = exec(&mut c, &mut d, tool);
         assert!(
-            txt(&r.out).contains(&format!("% {tool}: not supported in this lab")),
+            txt(&r.out).contains("% Incomplete command"),
             "{tool}: {}",
             txt(&r.out)
         );
     }
+    // traffic stays a stub for now
+    let r = exec(&mut c, &mut d, "traffic");
+    assert!(
+        txt(&r.out).contains("% traffic: not supported in this lab"),
+        "{}",
+        txt(&r.out)
+    );
+    // resolver set + readback
+    exec(&mut c, &mut d, "ip dns 8.8.8.8");
+    assert_eq!(d.resolver, Some([8, 8, 8, 8]));
+    let r = exec(&mut c, &mut d, "ip dns");
+    assert!(txt(&r.out).contains("8.8.8.8"), "{}", txt(&r.out));
+    // service flags + A record
+    let r = exec(&mut c, &mut d, "server dns on");
+    assert!(r.mutated);
+    assert!(d.svc_dns);
+    let r = exec(&mut c, &mut d, "server dns a web.local 10.0.0.1");
+    assert!(r.mutated);
+    assert!(d.dns_records.iter().any(|(n, ip)| n == "web.local" && *ip == [10, 0, 0, 1]));
+    // nc/curl parse and report, even with nowhere to send
+    let r = exec(&mut c, &mut d, "nc -u 10.0.0.1 53 hello");
+    assert!(txt(&r.out).contains("UDP 10.0.0.1:53"), "{}", txt(&r.out));
+    let r = exec(&mut c, &mut d, "curl 10.0.0.1:8080");
+    assert!(txt(&r.out).contains("10.0.0.1:8080"), "{}", txt(&r.out));
+    let r = exec(&mut c, &mut d, "nslookup web.local");
+    assert!(
+        txt(&r.out).contains("no address or DNS server")
+            || txt(&r.out).contains("web.local"),
+        "{}",
+        txt(&r.out)
+    );
     // no router commands on a host
     let r = exec(&mut c, &mut d, "enable");
     let t = txt(&r.out);

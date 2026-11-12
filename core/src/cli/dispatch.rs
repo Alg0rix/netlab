@@ -4,7 +4,7 @@
 
 
 use super::types::{
-    AceSpec, Act, AddrSpec, ClearKind, Intent, Mutation, NoTarget, Op, SwSpec,
+    AceSpec, Act, AddrSpec, ClearKind, HostSvc, Intent, Mutation, NoTarget, Op, SwSpec,
 };
 use super::{modes, nvgen, render, Cli};
 use crate::config::{self, SetErr};
@@ -194,6 +194,17 @@ fn mutate(
             map_err(config::set_host_ip(d, ip, mask, gw, tick), out)
         }
         Mutation::HostDhcp => map_err(config::host_dhcp(d, tick, events), out),
+        Mutation::HostDns { ip } => host_dns(d, ip, out),
+        Mutation::HostNslookup { name } => host_nslookup(d, &name, tick, events, out),
+        Mutation::HostCurl { ip, port } => host_curl(d, ip, port, tick, events, out),
+        Mutation::HostNc {
+            udp,
+            ip,
+            port,
+            payload,
+        } => host_nc(d, udp, ip, port, &payload, tick, events, out),
+        Mutation::HostService { svc, on } => host_service(d, svc, on, out),
+        Mutation::HostDnsRecord { name, ip } => host_dns_record(d, &name, ip, out),
         Mutation::IfDescription { port, text } => {
             map_err(config::set_description(d, port, &text), out)
         }
@@ -325,4 +336,136 @@ fn clear(d: &mut Device, k: ClearKind, tick: u64) {
             }
         }
     }
+}
+
+/* Host network tools — VPCS-flavoured. Immediate lines land in `out`;
+the answers arrive later as syslog events on the same console. */
+
+fn powered_gate(d: &Device, out: &mut Vec<Op>) -> bool {
+    if !d.powered {
+        out.push(Op::err("node is stopped — start it first"));
+        return false;
+    }
+    true
+}
+
+fn host_dns(d: &mut Device, ip: Option<[u8; 4]>, out: &mut Vec<Op>) -> bool {
+    match ip {
+        None => {
+            out.push(Op::dim(format!(
+                "DNS server : {}",
+                d.resolver.map(crate::ip_str).unwrap_or_else(|| "none".into())
+            )));
+            false
+        }
+        Some(v) => {
+            d.resolver = Some(v);
+            out.push(Op::text(format!("DNS server {}", crate::ip_str(v))));
+            true
+        }
+    }
+}
+
+fn host_nslookup(
+    d: &mut Device,
+    name: &str,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+    out: &mut Vec<Op>,
+) -> bool {
+    if !powered_gate(d, out) {
+        return false;
+    }
+    if !crate::services::start_dns(d, name, tick, events) {
+        out.push(Op::err(
+            "no address or DNS server — ip dhcp, or ip <addr> and ip dns <ip>",
+        ));
+        return false;
+    }
+    out.push(Op::dim(format!(
+        "Server: {}\nName: {}",
+        d.resolver.map(crate::ip_str).unwrap_or_else(|| "?".into()),
+        name
+    )));
+    false
+}
+
+fn host_curl(
+    d: &mut Device,
+    ip: [u8; 4],
+    port: u16,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+    out: &mut Vec<Op>,
+) -> bool {
+    if !powered_gate(d, out) {
+        return false;
+    }
+    if !crate::services::start_tcp(d, ip, port, true, tick, events) {
+        out.push(Op::err("could not send the GET"));
+        return false;
+    }
+    out.push(Op::dim(format!(
+        "GET / HTTP/1.0  →  {}:{}",
+        crate::ip_str(ip),
+        port
+    )));
+    false
+}
+
+fn host_nc(
+    d: &mut Device,
+    udp: bool,
+    ip: [u8; 4],
+    port: u16,
+    payload: &str,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+    out: &mut Vec<Op>,
+) -> bool {
+    if !powered_gate(d, out) {
+        return false;
+    }
+    let ok = if udp {
+        crate::services::start_udp(d, ip, port, payload.as_bytes(), tick, events)
+    } else {
+        crate::services::start_tcp(d, ip, port, false, tick, events)
+    };
+    if !ok {
+        out.push(Op::err("could not send the probe"));
+        return false;
+    }
+    out.push(Op::dim(format!(
+        "{} {}:{}",
+        if udp { "UDP" } else { "TCP" },
+        crate::ip_str(ip),
+        port
+    )));
+    false
+}
+
+fn host_service(d: &mut Device, svc: HostSvc, on: bool, out: &mut Vec<Op>) -> bool {
+    match svc {
+        HostSvc::Dhcp => d.svc_dhcp = on,
+        HostSvc::Dns => d.svc_dns = on,
+        HostSvc::Http => d.svc_http = on,
+    }
+    out.push(Op::text(format!(
+        "{} server {}",
+        svc.label(),
+        if on { "on" } else { "off" }
+    )));
+    true
+}
+
+fn host_dns_record(d: &mut Device, name: &str, ip: [u8; 4], out: &mut Vec<Op>) -> bool {
+    let n = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    if n.is_empty() {
+        out.push(Op::err("usage: server dns a <name> <ip>"));
+        return false;
+    }
+    d.dns_records.retain(|(x, _)| x != &n);
+    d.dns_records.push((n.clone(), ip));
+    out.push(Op::text(format!("A {} → {}", n, crate::ip_str(ip))));
+    true
 }

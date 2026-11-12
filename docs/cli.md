@@ -246,7 +246,16 @@ arp | show arp | show ip
 set pcname <name>
 ```
 
-The words `traffic`, `nc`, `curl`, `server`, and `nslookup` parse. Typed alone, each prints `% <word>: not supported in this lab`. With arguments, they print `% Invalid input detected at '^' marker.`
+```text
+ip dns [<server>]                 show or set the resolver
+nslookup <name>                   send a DNS query; the answer arrives as a syslog line
+curl <ip[:port]> [port]           HTTP GET /; the reply arrives as a syslog line
+nc [-u] <ip> <port> [<payload>]   TCP or UDP probe; replies arrive as syslog lines
+server dhcp|dns|http on|off       toggle a service on this node
+server dns a <name> <ip>          add a DNS A record
+```
+
+The answers are asynchronous. The query frames cross the links, and the replies print when they arrive. The word `traffic` parses but stays a stub: it prints `% traffic: not supported in this lab`.
 
 ## Unsupported commands
 
@@ -275,9 +284,9 @@ Older lab notes and startup scripts can use forms from the browser shell that th
 
 | Earlier form | In the engine |
 |---|---|
-| Host: `ip eth1 <addr/len>`, `ip dns <ip>`, `clear ip`, `show route`, `hostname <name>`, `reload` | `% Invalid input detected at '^' marker.` A host takes `ip <addr/len> [<gateway>]`. Rename with `set pcname <name>`. |
+| Host: `ip eth1 <addr/len>`, `clear ip`, `show route`, `hostname <name>`, `reload` | `% Invalid input detected at '^' marker.` A host takes `ip <addr/len> [<gateway>]`. Rename with `set pcname <name>`. |
 | Host: `traceroute <ip>`, `ping <ip> -c <n>` | `% Invalid input detected at '^' marker.` Use `trace <ip>` and `ping <ip>`. |
-| Host: `nslookup`, `curl`, `nc`, `server`, `traffic` | Typed alone, `% <word>: not supported in this lab`. With arguments, the invalid-input error. |
+| Host: `traffic` | `% traffic: not supported in this lab`. |
 | Router or switch: `ip address <if> <addr/len>`, `switchport mode <if> access` on one line | Open the interface first with `interface <if>`. Then use `ip address <ip> <mask>` or `switchport mode access`. Masks use dotted-quad form. |
 | Router: `ip route <prefix/len> <next-hop> [<if>]`, `no ip route <index>` | `ip route <net> <mask> <next-hop> [<1-255>]` in global config. Remove a route with `no ip route <net> <mask> <next-hop>`. |
 | Router: `router ospf network <prefix> <wild> area <id>`, `ip ospf <if> area <n>` | `router ospf <pid>`, then `network <net> <wildcard> area <n>`. |

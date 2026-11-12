@@ -206,6 +206,12 @@ pub enum ActTag {
     Show(ShowKind),
     Clear(ClearKind),
     HostExtra(HostExtraKind),
+    HostDns,
+    HostNslookup,
+    HostCurl,
+    HostNc,
+    HostServerSvc,
+    HostDnsRecord,
     WriteMem,
     ReloadAsk,
     CopyRunStartAsk,
@@ -224,6 +230,13 @@ pub enum Mutation {
     SetIp { port: PortId, ip: [u8; 4], mask: [u8; 4] },
     HostIp { ip: [u8; 4], mask: [u8; 4], gw: Option<[u8; 4]> },
     HostDhcp,
+    /// `ip dns` (None → show) / `ip dns <server>` (Some → set).
+    HostDns { ip: Option<[u8; 4]> },
+    HostNslookup { name: String },
+    HostCurl { ip: [u8; 4], port: u16 },
+    HostNc { udp: bool, ip: [u8; 4], port: u16, payload: String },
+    HostService { svc: HostSvc, on: bool },
+    HostDnsRecord { name: String, ip: [u8; 4] },
     IfDescription { port: PortId, text: String },
     Switchport { port: PortId, spec: SwSpec },
     AddRoute { net: [u8; 4], mask: [u8; 4], nh: [u8; 4], ad: Option<u8> },
@@ -294,22 +307,31 @@ pub enum SessionAct {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSvc {
+    Dhcp,
+    Dns,
+    Http,
+}
+
+impl HostSvc {
+    pub fn label(self) -> &'static str {
+        match self {
+            HostSvc::Dhcp => "dhcp",
+            HostSvc::Dns => "dns",
+            HostSvc::Http => "http",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostExtraKind {
     Traffic,
-    Nc,
-    Curl,
-    Server,
-    Nslookup,
 }
 
 impl HostExtraKind {
     pub fn tool(self) -> &'static str {
         match self {
             HostExtraKind::Traffic => "traffic",
-            HostExtraKind::Nc => "nc",
-            HostExtraKind::Curl => "curl",
-            HostExtraKind::Server => "server",
-            HostExtraKind::Nslookup => "nslookup",
         }
     }
 }

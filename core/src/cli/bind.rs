@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 
 use super::pending;
 use super::types::{
-    AceSpec, Act, ActTag, AddrSpec, Arg, ClearKind, Intent, ModeCtx,
+    AceSpec, Act, ActTag, AddrSpec, Arg, ClearKind, HostSvc, Intent, ModeCtx,
     ModeOp, Mutation, NegKind, NoTarget, SwSpec,
 };
 use crate::device::{Device, DeviceKind, NatRole, VlanState};
@@ -326,6 +326,50 @@ pub fn bind(
             Act::Clear(k)
         }
         ActTag::HostExtra(k) => Act::HostExtra(k),
+        ActTag::HostDns => Act::Mutate(Mutation::HostDns {
+            ip: argv.first().map(ip),
+        }),
+        ActTag::HostNslookup => Act::Mutate(Mutation::HostNslookup {
+            name: text(&argv[0]),
+        }),
+        ActTag::HostCurl => {
+            // `curl <ip> [port]` — `ip:port` in one token is also legal.
+            let target = text(&argv[0]);
+            let (h, p) = match target.split_once(':') {
+                Some((h, p)) => (h.to_string(), p.parse().unwrap_or(80)),
+                None => (target, argv.get(1).map(num).map(|n| n as u16).unwrap_or(80)),
+            };
+            let addr: Ipv4Addr = h.parse().map_err(|_| 0usize)?;
+            Act::Mutate(Mutation::HostCurl {
+                ip: addr.octets(),
+                port: p,
+            })
+        }
+        ActTag::HostNc => {
+            let udp = matches!(argv.first(), Some(Arg::Str(s)) if s == "-u");
+            let i = usize::from(udp);
+            Act::Mutate(Mutation::HostNc {
+                udp,
+                ip: ip(&argv[i]),
+                port: num(&argv[i + 1]) as u16,
+                payload: argv.get(i + 2).map(text).unwrap_or_default(),
+            })
+        }
+        ActTag::HostServerSvc => {
+            let svc = match str_at(argv, 0) {
+                "dhcp" => HostSvc::Dhcp,
+                "dns" => HostSvc::Dns,
+                _ => HostSvc::Http,
+            };
+            Act::Mutate(Mutation::HostService {
+                svc,
+                on: str_at(argv, 1) == "on",
+            })
+        }
+        ActTag::HostDnsRecord => Act::Mutate(Mutation::HostDnsRecord {
+            name: text(&argv[1]),
+            ip: ip(&argv[2]),
+        }),
         ActTag::Ping => {
             Act::Intent(Intent::Ping { target: Ipv4Addr::from(ip(&argv[0])) })
         }

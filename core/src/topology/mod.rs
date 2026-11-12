@@ -186,7 +186,8 @@ impl Topology {
 
     /// Recompute carrier on one port from its link, then run the
     /// effective-state machinery (C1/C2 pair, OSPF port-down, connected
-    /// route synthesis) when admin×carrier flips.
+    /// route synthesis) when admin×carrier flips. Carrier ends at a
+    /// powered-off PHY, on either side of the cable.
     fn refresh_link_state(&mut self, dev_id: DeviceId, port: usize) {
         let carrier = self
             .devices
@@ -194,7 +195,10 @@ impl Topology {
             .and_then(|d| d.ports.get(port))
             .and_then(|p| p.link)
             .and_then(|l| self.links.get(&l))
-            .map(|l| l.up)
+            .map(|l| {
+                l.up && self.devices.get(&l.a.device).map(|d| d.powered).unwrap_or(false)
+                    && self.devices.get(&l.b.device).map(|d| d.powered).unwrap_or(false)
+            })
             .unwrap_or(false);
         let tick = self.tick;
         if let Some(d) = self.devices.get_mut(&dev_id) {
