@@ -1,0 +1,40 @@
+## netlab-golden v1
+## id: c18-nvgen-seeds
+## src-sha: bb46013edc5401a0
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R1> enable
+R1# conf t
+R1(config)# hostname OspfCore
+!intent rename OspfCore
+OspfCore(config)# interface g0/1
+OspfCore(config-if)# ip address 172.16.0.1 255.255.255.0
+OspfCore(config-if)# description core-link
+OspfCore(config-if)# no shutdown
+OspfCore(config-if)# exit
+OspfCore(config)# router ospf 1
+OspfCore(config-router)# router-id 1.1.1.1
+OspfCore(config-router)# end
+OspfCore# show running-config
+hostname OspfCore
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ description core-link
+ ip address 172.16.0.1 255.255.255.0
+ no shutdown
+!
+router ospf 1
+ router-id 1.1.1.1
+ network 10.0.0.0 0.0.0.255 area 0
+!
+ip route 10.9.0.0 255.255.255.0 10.0.0.2
+!
+no service dhcp
+end
+!prompt OspfCore#

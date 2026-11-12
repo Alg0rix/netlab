@@ -1,0 +1,25 @@
+## netlab-golden v1
+## id: c08-no-forms
+## src-sha: 2f2fe9a53fe91d60
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# conf t
+R(config)# ip route 10.9.0.0 255.255.255.0 10.0.0.1
+R(config)# no ip route 10.9.0.0 255.255.255.0 10.0.0.1
+R(config)# no ip route 10.9.0.0 255.255.255.0 10.0.0.1
+R(config)# ip route 10.9.0.0 255.255.255.0 10.0.0.1
+R(config)# no ip route 10.9.0.0 255.255.255.0
+R(config)# default hostname
+Router(config)# hostname Named
+!intent rename Named
+Named(config)# default hostname
+Router(config)# interface g0/0
+Router(config-if)# no shutdown
+Router(config-if)# default shutdown
+Router(config-if)# no shutdown
+Router(config-if)# exit
+Router(config)# end
+!prompt Router#

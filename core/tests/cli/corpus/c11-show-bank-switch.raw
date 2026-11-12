@@ -1,0 +1,38 @@
+## netlab-corpus v1
+## id: c11-show-bank-switch
+## kind: switch
+## topo: switch-hosts
+## provenance: authored
+## note: every switch ShowKind against the switch-hosts seed (vlan 10
+## note: "blue", fa0/3 access 10). fa-alias abbreviations exercise the
+## note: switch ifmap family; `## tick` proves idle hosts emit nothing.
+
+enable
+conf t
+vlan 20
+name red
+state suspend
+exit
+interface f0/1
+switchport mode trunk
+switchport trunk allowed vlan 10,20
+exit
+interface fast0/2
+switchport mode access
+exit
+interface fastethernet0/4
+description unused
+exit
+end
+## tick: +10
+show vlan
+show vlan brief
+show mac address-table
+show switchport
+show ip interface brief
+show interfaces
+show status
+show running-config
+show startup-config
+show version
+show logging buffered

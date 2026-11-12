@@ -1,0 +1,51 @@
+## netlab-golden v1
+## id: c05-abbrev-ifname
+## src-sha: 1ac06d25bbc64e58
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# conf t
+R(config)# interface g0/0
+R(config-if)# interface gi0/0
+R(config-if)# interface gig0/0
+R(config-if)# interface giga0/0
+R(config-if)# interface gigab0/0
+R(config-if)# interface gigabi0/0
+R(config-if)# interface gigabit0/0
+R(config-if)# interface gigabite0/0
+R(config-if)# interface gigabitet0/0
+R(config-if)# interface gigabiteth0/0
+R(config-if)# interface gigabiteithet0/0
+                        ^
+!err % Invalid input detected at '^' marker.
+R(config-if)# interface gigabitethe0/0
+R(config-if)# interface gigabitether0/0
+R(config-if)# interface gigabitethene0/0
+                        ^
+!err % Invalid input detected at '^' marker.
+R(config-if)# interface gigabitethern0/0
+R(config-if)# interface gigabitetherne0/0
+R(config-if)# interface gigabitethernet0/0
+R(config-if)# exit
+R(config)# end
+R# sh ip int br
+Interface              IP-Address      OK? Method Status                Protocol
+GigabitEthernet0/0     unassigned      YES unset  administratively down down
+GigabitEthernet0/1     unassigned      YES unset  administratively down down
+GigabitEthernet0/2     unassigned      YES unset  administratively down down
+GigabitEthernet0/3     unassigned      YES unset  administratively down down
+GigabitEthernet0/4     unassigned      YES unset  administratively down down
+GigabitEthernet0/5     unassigned      YES unset  administratively down down
+GigabitEthernet0/6     unassigned      YES unset  administratively down down
+GigabitEthernet0/7     unassigned      YES unset  administratively down down
+R# dis
+R> en
+R# conf t
+R(config)# int g0/1
+R(config-if)# end
+R# sh ver
+netlab-core CLI engine
+device kind: router
+!prompt R#

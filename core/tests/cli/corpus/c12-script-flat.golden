@@ -1,0 +1,37 @@
+## netlab-golden v1
+## id: c12-script-flat
+## src-sha: bc1b483fd5c6f053
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# conf t
+R(config)# hostname Before
+!intent rename Before
+Before(config)# end
+## script
+Before> enable
+Before# configure terminal
+Before(config)# hostname Scripted
+!intent rename Scripted
+Scripted(config)# interface g0/0
+Scripted(config-if)# ip address 10.7.0.1 255.255.255.0
+Scripted(config-if)# bogus-command
+Translating "bogus-command" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+Scripted(config-if)# no shutdown
+Scripted(config-if)# end
+!error 5 % Unknown command or computer name, or unable to find computer address
+## endscript
+Scripted# show ip interface brief
+Interface              IP-Address      OK? Method Status                Protocol
+GigabitEthernet0/0     10.7.0.1        YES manual up                    down
+GigabitEthernet0/1     unassigned      YES unset  administratively down down
+GigabitEthernet0/2     unassigned      YES unset  administratively down down
+GigabitEthernet0/3     unassigned      YES unset  administratively down down
+GigabitEthernet0/4     unassigned      YES unset  administratively down down
+GigabitEthernet0/5     unassigned      YES unset  administratively down down
+GigabitEthernet0/6     unassigned      YES unset  administratively down down
+GigabitEthernet0/7     unassigned      YES unset  administratively down down
+!prompt Scripted#

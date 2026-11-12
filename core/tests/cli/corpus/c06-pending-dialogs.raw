@@ -1,0 +1,20 @@
+## netlab-corpus v1
+## id: c06-pending-dialogs
+## kind: router
+## provenance: authored
+## note: reload yes/no legs, matcher-shaped junk reprompts, ? mid-dialog,
+## note: ctrlc aborts, ctrlz drains pending then falls to the mode guard.
+
+enable
+reload
+## key: ?
+show version
+en
+no
+## key: ?
+## key: ctrlc
+reload
+n
+yes
+reload
+## key: ctrlz

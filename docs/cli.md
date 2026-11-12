@@ -2,7 +2,7 @@
 
 `netlab-core` includes an IOS-style command-line engine in `core/src/cli/`. One `Cli` session drives one device: a router, a switch, or a host.
 
-This page documents the engine's command surface. The browser console ships its own shell in `web/cli.js`. The [README](../README.md#simulated-cli-reference) lists that shell's commands. The two grammars differ. For example, the engine takes `ip route <net> <mask> <next-hop>`, and the browser shell takes `ip route <prefix/len> <next-hop>`.
+This page documents the engine's command surface. The browser console ships its own shell in `web/cli.js`. The [README](../README.md#simulated-cli-reference) lists that shell's commands. The [WASM exports](wasm-api.md) connect this engine to JavaScript. [Corpus](corpus.md) describes the transcript tests. The two grammars differ. For example, the engine takes `ip route <net> <mask> <next-hop>`, and the browser shell takes `ip route <prefix/len> <next-hop>`.
 
 ## Session API
 

@@ -1,0 +1,27 @@
+## netlab-corpus v1
+## id: c15-startup-mirror
+## kind: router
+## provenance: authored
+## startup:
+ hostname Saved
+ interface GigabitEthernet0/0
+  ip address 10.5.5.5 255.255.255.0
+## note: the nvram mirror — seeded startup shows verbatim, write memory
+## note: replaces it with nvgen, erase nulls it, copy run start arms Field.
+
+enable
+show startup-config
+conf t
+hostname Core
+interface g0/0
+no shutdown
+end
+write memory
+show startup-config
+write erase
+yes
+show startup-config
+erase startup-config
+no
+copy running-config startup-config
+bogus.cfg

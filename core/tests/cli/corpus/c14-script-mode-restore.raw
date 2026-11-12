@@ -1,0 +1,21 @@
+## netlab-corpus v1
+## id: c14-script-mode-restore
+## kind: router
+## provenance: authored
+## note: script from a config-if seat — script navigates its own modes,
+## note: arms a pending dialog on the last line, ends mid-dialog; the seat
+## note: (node, ctx, pending=none) restores to the caller's config-if.
+
+enable
+conf t
+interface g0/0
+
+## script
+interface g0/1
+description nested
+reload
+no
+## endscript
+
+show ip interface brief
+end

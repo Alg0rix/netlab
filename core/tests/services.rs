@@ -30,7 +30,7 @@ fn dhcp_dns_and_http_between_hosts() {
     assert!(t.add_dns_record(srv, "lab.local", "10.1.0.9"));
     assert!(t.dhcp_client(pc, 0));
     let msgs = run(&mut t, 80);
-    let leased = port_ip(&t, pc).expect(&format!("no lease\n{}", msgs.join("\n")));
+    let leased = port_ip(&t, pc).unwrap_or_else(|| panic!("no lease\n{}", msgs.join("\n")));
     assert_eq!(leased, "10.1.0.10", "{}", msgs.join("\n"));
 
     assert!(t.dns_query(pc, "lab.local"));

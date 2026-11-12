@@ -434,7 +434,7 @@ export class SimShell {
       dport = +t[dst.next + 1];
       if (!(dport > 0 && dport < 65536)) throw new Error('eq needs a port');
     }
-    if (!this.app.lab.acl_add(this.id, num, act === 'permit', proto, src.ip, src.wild, dst.ip, dst.wild, 0, dport)) {
+    if (!this.app.lab.acl_add(this.id, { num, permit: act === 'permit', proto, src: src.ip, src_wild: src.wild, dst: dst.ip, dst_wild: dst.wild, sport: 0, dport })) {
       throw new Error('ACL entry was not added');
     }
   }

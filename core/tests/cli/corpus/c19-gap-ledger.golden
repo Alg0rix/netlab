@@ -1,0 +1,238 @@
+## netlab-golden v1
+## id: c19-gap-ledger
+## src-sha: 620fcd17594aaf3b
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# conf t
+## gap: FR-SVI
+R(config)# interface vlan 10
+                     ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-SVI
+R(config)# interface vl 10
+                     ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-SVI
+R(config)# ip default-gateway 10.0.0.1
+              ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-ACL-NAMED
+R(config)# ip access-list extended FOO
+              ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-DHCP-POOL tok2
+R(config)# ip dhcp pool VOICE
+                   ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-NAT-POOL tok2
+R(config)# ip nat pool P1 1.1.1.1 2.2.2.2
+                  ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-NAT-POOL
+R(config)# ip nat inside source list 1 pool P1 overload
+                                ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-OSPF-DEEP
+R(config)# passive-interface g0/0
+Translating "passive-interface" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# enable secret s3cr3t
+                  ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-AUTH
+R(config)# line con 0
+Translating "line" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# login
+Translating "login" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# username admin secret pw
+Translating "username" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# banner motd #hi#
+Translating "banner" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# privilege exec level 15 ping
+Translating "privilege" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-AUTH
+R(config)# exec-timeout 5 0
+Translating "exec-timeout" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# mac address-table static aaaa.bbbb.cccc vlan 10 interface fa0/1
+Translating "mac" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# arp 10.0.0.1 aaaa.bbbb.cccc arpa
+Translating "arp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# logging buffered 4096
+Translating "logging" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# interface range g0/0-4
+                     ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED
+R(config)# interface port-channel 1
+                     ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED
+R(config)# aaa new-model
+Translating "aaa" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# ip http server
+              ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED
+R(config)# snmp-server community public ro
+Translating "snmp-server" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# ntp server 10.0.0.1
+Translating "ntp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# ipv6 unicast-routing
+Translating "ipv6" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# route-map RM permit 10
+Translating "route-map" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# crypto key generate rsa
+Translating "crypto" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# mpls ip
+Translating "mpls" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# ip sla 1
+              ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED
+R(config)# cdp enable
+Translating "cdp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# lldp run
+Translating "lldp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# vtp mode server
+Translating "vtp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# spanning-tree vlan 10 priority 0
+Translating "spanning-tree" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# udld enable
+Translating "udld" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config)# service password-encryption
+                   ^
+!err % Invalid input detected at '^' marker.
+R(config)# interface g0/0
+## gap: FR-SVI
+R(config-if)# no switchport
+                 ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED
+R(config-if)# mtu 1500
+Translating "mtu" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# speed 100
+Translating "speed" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# duplex full
+Translating "duplex" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# channel-group 1 mode on
+Translating "channel-group" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# standby 1 ip 10.0.0.254
+Translating "standby" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# vrrp 1 ip 10.0.0.254
+Translating "vrrp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# hsrp 1 ip 10.0.0.254
+Translating "hsrp" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# monitor session 1 source interface g0/0
+Translating "monitor" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-if)# ip helper-address 10.0.0.9
+                 ^
+!err % Invalid input detected at '^' marker.
+R(config-if)# exit
+R(config)# router ospf 1
+## gap: FR-OSPF-DEEP
+R(config-router)# passive-interface default
+Translating "passive-interface" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-OSPF-DEEP
+R(config-router)# default-information originate
+Translating "default-information" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED
+R(config-router)# redistribute static
+Translating "redistribute" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+R(config-router)# exit
+R(config)# end
+## gap: FR-PING-EXT tok2
+R# ping 10.0.0.1 repeat 5
+                 ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-PING-EXT tok2
+R# ping 10.0.0.1 size 100
+                 ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-PING-EXT
+R# ping
+!err % Incomplete command.
+## gap: FR-EMACS tok1
+R# terminal editing
+            ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-PAGER tok1
+R# terminal length 0
+            ^
+!err % Invalid input detected at '^' marker.
+## gap: FR-UNBACKED tok0
+R# ssh 10.0.0.2
+Translating "ssh" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED tok0
+R# telnet 10.0.0.2
+Translating "telnet" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+## gap: FR-UNBACKED tok0
+R# debug ip ospf
+Translating "debug" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+!prompt R#

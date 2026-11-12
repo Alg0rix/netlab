@@ -1,0 +1,35 @@
+## netlab-corpus v1
+## id: c10-show-bank-router
+## kind: router
+## topo: ospf-pair
+## tick: 100
+## provenance: authored
+## note: every router ShowKind against the ospf-pair seed. The rig is
+## note: unticked in this case — symmetric hello arrivals on a shared link
+## note: are engine-ordered and live in P12's order-insensitive checks.
+
+enable
+conf t
+access-list 10 permit ip any any
+access-list 10 deny icmp host 10.0.0.5 any
+ip nat inside source static 192.168.1.10 203.0.113.10
+ip dhcp excluded-address 192.168.1.1 192.168.1.20
+service dhcp
+end
+show ip interface brief
+show ip route
+show arp
+show ip access-lists
+show ip ospf
+show ip ospf neighbor
+show ip ospf interface
+show ip nat translations
+show ip dhcp binding
+show ip protocols
+show interfaces
+show running-config
+show startup-config
+show status
+show version
+show history
+show logging buffered

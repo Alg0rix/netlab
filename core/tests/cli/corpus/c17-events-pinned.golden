@@ -1,0 +1,23 @@
+## netlab-golden v1
+## id: c17-events-pinned
+## src-sha: 0373f8ec6a622ea2
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+PC> ip dhcp
+## tick: +40
+!event dhcp PC: DHCP discover on port 0 (PC)
+!event dhcp R: DHCP offer 192.168.1.10 to 02:00:00:00:00:09
+!event dhcp PC: DHCP request 192.168.1.10
+!event dhcp R: DHCP ack 192.168.1.10 to 02:00:00:00:00:09
+!event dhcp PC: DHCP 192.168.1.10/24 gw 192.168.1.1 dns 192.168.1.1
+PC> ip dhcp
+## tick: +40
+!event dhcp PC: DHCP discover on port 0 (PC)
+!event dhcp R: DHCP offer 192.168.1.10 to 02:00:00:00:00:09
+!event dhcp PC: DHCP request 192.168.1.10
+!event dhcp R: DHCP ack 192.168.1.10 to 02:00:00:00:00:09
+!event dhcp PC: DHCP 192.168.1.10/24 gw 192.168.1.1 dns 192.168.1.1
+PC> ip 192.168.1.99 255.255.255.0 192.168.1.1
+!prompt PC>

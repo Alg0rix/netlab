@@ -1,0 +1,41 @@
+## netlab-golden v1
+## id: c02-triad-invalid
+## src-sha: 48d2cd7eac77c0c7
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# bogusbox
+Translating "bogusbox" ...domain server (255.255.255.255)
+!err % Unknown command or computer name, or unable to find computer address
+R# no frobnicate
+   ^
+!err % Invalid input detected at '^' marker.
+R# show zz
+        ^
+!err % Invalid input detected at '^' marker.
+R# show version extra
+                ^
+!err % Invalid input detected at '^' marker.
+R# ping 999.1.1.1
+        ^
+!err % Invalid input detected at '^' marker.
+R# conf t
+R(config)# interface zzz
+                     ^
+!err % Invalid input detected at '^' marker.
+R(config)# no frobnicate
+              ^
+!err % Invalid input detected at '^' marker.
+R(config)# enable
+           ^
+!err % Invalid input detected at '^' marker.
+R(config)# ip route 10.0.0.0 255.255.255.0 999.999.999.999
+                                           ^
+!err % Invalid input detected at '^' marker.
+R(config)# hostname Fine
+!intent rename Fine
+Fine(config)# end
+Fine# disable
+!prompt Fine>

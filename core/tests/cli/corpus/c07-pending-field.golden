@@ -1,0 +1,43 @@
+## netlab-golden v1
+## id: c07-pending-field
+## src-sha: 998287082ade1672
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# copy running-config startup-config
+## key: ?
+!rows 15
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+  disable user exec
+  configure configure
+  copy copy
+  write write
+  erase erase
+  reload reload
+  clear clear
+!pending "Destination filename [startup-config]? "
+Destination filename [startup-config]? bogus.cfg
+!err %Error opening nvram:bogus.cfg (No such file or directory)
+R# copy running-config startup-config
+Destination filename [startup-config]? startup-config
+Building configuration...
+!ok [OK]
+!intent nvram-write 4
+  hostname R
+  !
+  no service dhcp
+  end
+R# copy running-config startup-config
+## key: ctrlc
+^C
+!prompt R#
+!prompt R#

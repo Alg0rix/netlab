@@ -1,0 +1,17 @@
+## netlab-corpus v1
+## id: c04-triad-ambiguous
+## kind: router
+## provenance: authored
+## note: prefixes shared by >=2 literals — `% Ambiguous command` at every seat.
+
+enable
+e
+c
+t
+conf t
+d
+e
+interface g0/0
+d
+e
+end

@@ -1,0 +1,129 @@
+## netlab-corpus v1
+## id: c19-gap-ledger
+## kind: router
+## provenance: authored
+## note: the deferred-FR ledger — every marker must land one of the three
+## note: honest-error classes. `interface vlan`/`interface vl` stand under
+## note: the dormant-family pin: no v1 kind emits `vl<N>` canonical names,
+## note: so no `vl<N>` key exists in any v1 IfMap; they flip to real
+## note: goldens in the commit that adds a kind with `vl<N>` ports.
+
+enable
+conf t
+## gap: FR-SVI
+interface vlan 10
+## gap: FR-SVI
+interface vl 10
+## gap: FR-SVI
+ip default-gateway 10.0.0.1
+## gap: FR-ACL-NAMED
+ip access-list extended FOO
+## gap: FR-DHCP-POOL tok2
+ip dhcp pool VOICE
+## gap: FR-NAT-POOL tok2
+ip nat pool P1 1.1.1.1 2.2.2.2
+## gap: FR-NAT-POOL
+ip nat inside source list 1 pool P1 overload
+## gap: FR-OSPF-DEEP
+passive-interface g0/0
+## gap: FR-AUTH
+enable secret s3cr3t
+## gap: FR-AUTH
+line con 0
+## gap: FR-AUTH
+login
+## gap: FR-AUTH
+username admin secret pw
+## gap: FR-AUTH
+banner motd #hi#
+## gap: FR-AUTH
+privilege exec level 15 ping
+## gap: FR-AUTH
+exec-timeout 5 0
+## gap: FR-UNBACKED
+mac address-table static aaaa.bbbb.cccc vlan 10 interface fa0/1
+## gap: FR-UNBACKED
+arp 10.0.0.1 aaaa.bbbb.cccc arpa
+## gap: FR-UNBACKED
+logging buffered 4096
+## gap: FR-UNBACKED
+interface range g0/0-4
+## gap: FR-UNBACKED
+interface port-channel 1
+## gap: FR-UNBACKED
+aaa new-model
+## gap: FR-UNBACKED
+ip http server
+## gap: FR-UNBACKED
+snmp-server community public ro
+## gap: FR-UNBACKED
+ntp server 10.0.0.1
+## gap: FR-UNBACKED
+ipv6 unicast-routing
+## gap: FR-UNBACKED
+route-map RM permit 10
+## gap: FR-UNBACKED
+crypto key generate rsa
+## gap: FR-UNBACKED
+mpls ip
+## gap: FR-UNBACKED
+ip sla 1
+## gap: FR-UNBACKED
+cdp enable
+## gap: FR-UNBACKED
+lldp run
+## gap: FR-UNBACKED
+vtp mode server
+## gap: FR-UNBACKED
+spanning-tree vlan 10 priority 0
+## gap: FR-UNBACKED
+udld enable
+## gap: FR-UNBACKED
+service password-encryption
+interface g0/0
+## gap: FR-SVI
+no switchport
+## gap: FR-UNBACKED
+mtu 1500
+## gap: FR-UNBACKED
+speed 100
+## gap: FR-UNBACKED
+duplex full
+## gap: FR-UNBACKED
+channel-group 1 mode on
+## gap: FR-UNBACKED
+standby 1 ip 10.0.0.254
+## gap: FR-UNBACKED
+vrrp 1 ip 10.0.0.254
+## gap: FR-UNBACKED
+hsrp 1 ip 10.0.0.254
+## gap: FR-UNBACKED
+monitor session 1 source interface g0/0
+## gap: FR-UNBACKED
+ip helper-address 10.0.0.9
+exit
+router ospf 1
+## gap: FR-OSPF-DEEP
+passive-interface default
+## gap: FR-OSPF-DEEP
+default-information originate
+## gap: FR-UNBACKED
+redistribute static
+exit
+end
+## gap: FR-PING-EXT tok2
+ping 10.0.0.1 repeat 5
+## gap: FR-PING-EXT tok2
+ping 10.0.0.1 size 100
+## gap: FR-PING-EXT
+ping
+## gap: FR-EMACS tok1
+terminal editing
+## gap: FR-PAGER tok1
+terminal length 0
+## gap: FR-UNBACKED tok0
+ssh 10.0.0.2
+## gap: FR-UNBACKED tok0
+telnet 10.0.0.2
+## gap: FR-UNBACKED tok0
+debug ip ospf

@@ -1,0 +1,25 @@
+## netlab-golden v1
+## id: c03-triad-incomplete
+## src-sha: 8f3c2b3a426d0ea5
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# show
+!err % Incomplete command.
+R# ping
+!err % Incomplete command.
+R# configure
+!err % Incomplete command.
+R# conf t
+R(config)# ip route
+!err % Incomplete command.
+R(config)# ip route 10.0.0.0
+!err % Incomplete command.
+R(config)# hostname
+!err % Incomplete command.
+R(config)# interface
+!err % Incomplete command.
+R(config)# end
+!prompt R#

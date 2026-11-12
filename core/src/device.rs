@@ -58,7 +58,7 @@ pub struct PortStats {
     pub cleared_tick: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Port {
     pub link: Option<LinkId>,
     pub mac: u64,
@@ -176,7 +176,7 @@ pub struct LeaseEntry {
 }
 
 /// Frame held back while ARP resolves `resolve`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pending {
     pub frame: Frame,
     pub out_port: usize,
@@ -185,13 +185,13 @@ pub struct Pending {
 
 /// Core-side ping/traceroute probe state — drives the C3–C8 wording
 /// through the shared event queue.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Probe {
     Ping(PingProbe),
     Trace(TraceProbe),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PingProbe {
     pub dst: [u8; 4],
     pub sent: u8,
@@ -203,7 +203,7 @@ pub struct PingProbe {
     pub next: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraceProbe {
     pub dst: [u8; 4],
     pub hop: u8,
@@ -231,7 +231,7 @@ impl Port {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Device {
     pub id: DeviceId,
     pub name: String,
@@ -528,6 +528,34 @@ impl Device {
 
     pub(crate) fn power_on(&mut self) {
         self.powered = true;
+    }
+
+    /// Reload-replay restore: the device becomes `base` — the snapshot the
+    /// adapter took after the lab document applied — except live carrier
+    /// bindings and canvas position, which are not configuration, and
+    /// in-flight state a reload drops. Connected routes re-derive from the
+    /// restored interfaces at the end.
+    pub fn restore_baseline(&mut self, base: &Device, tick: u64) {
+        let live: Vec<(Option<LinkId>, bool)> =
+            self.ports.iter().map(|p| (p.link, p.link_up)).collect();
+        let (x, y) = (self.x, self.y);
+        *self = base.clone();
+        self.x = x;
+        self.y = y;
+        for (p, (link, link_up)) in self.ports.iter_mut().zip(live) {
+            p.link = link;
+            p.link_up = link_up;
+        }
+        self.outbox.clear();
+        self.ext_out.clear();
+        self.pending.clear();
+        self.arp_cache.clear();
+        self.mac_table.clear();
+        self.flows.clear();
+        self.nat.clear();
+        self.ospf.reset();
+        self.probe = None;
+        self.sync_connected(tick);
     }
 
     /// Longest prefix, then connected, then static over OSPF.

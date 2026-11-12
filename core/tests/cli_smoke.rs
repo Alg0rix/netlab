@@ -253,7 +253,7 @@ fn help_and_complete() {
     let mut c = Cli::new();
     exec(&mut c, &mut d, "enable");
     // ? at empty → rows listing heads incl <cr>-less commands
-    let h = c.help(&mut d, "");
+    let h = c.help(&d, "");
     match h {
         HelpResult::Rows { rows, .. } => {
             let words: Vec<&str> = rows.iter().map(|r| r.word.as_str()).collect();
@@ -266,18 +266,18 @@ fn help_and_complete() {
         other => panic!("expected rows, got {other:?}"),
     }
     // trailing space after leaf → <cr>
-    let h = c.help(&mut d, "enable ");
+    let h = c.help(&d, "enable ");
     match h {
         HelpResult::Inline { inline, .. } => assert!(inline.iter().any(|s| s == "<cr>")),
         other => panic!("expected inline <cr>, got {other:?}"),
     }
     // tab complete: sh → show
-    match c.complete(&mut d, "sh") {
+    match c.complete(&d, "sh") {
         CompleteResult::Line { line } => assert_eq!(line, "show"),
         other => panic!("expected line, got {other:?}"),
     }
     // ambiguous prefix → list
-    match c.complete(&mut d, "e") {
+    match c.complete(&d, "e") {
         CompleteResult::List { list } => assert!(list.len() > 1),
         CompleteResult::Line { line } => assert!(line.starts_with('e')),
         other => panic!("expected list/line, got {other:?}"),
@@ -285,7 +285,7 @@ fn help_and_complete() {
     // help is current-mode only — config-if rows come from config-if root
     exec(&mut c, &mut d, "conf t");
     exec(&mut c, &mut d, "int g0/0");
-    let h = c.help(&mut d, "");
+    let h = c.help(&d, "");
     match h {
         HelpResult::Rows { rows, .. } => {
             let words: Vec<&str> = rows.iter().map(|r| r.word.as_str()).collect();
@@ -604,7 +604,7 @@ fn hidden_ping_c_parses_not_in_help() {
     let t = txt(&r.out);
     assert!(!t.contains("Invalid input"), "{t}");
     // but `ping ?` must not advertise -c
-    let h = c.help(&mut d, "ping ");
+    let h = c.help(&d, "ping ");
     match h {
         HelpResult::Rows { rows, .. } => {
             assert!(!rows.iter().any(|r| r.word == "-c"), "{rows:?}");

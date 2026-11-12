@@ -1,0 +1,21 @@
+## netlab-corpus v1
+## id: c02-triad-invalid
+## kind: router
+## provenance: authored
+## note: caret byte-columns at tok0/mid/last, translate tok0 on
+## note: non-lattice first word, admit-guard Invalid, negative controls.
+
+enable
+bogusbox
+no frobnicate
+show zz
+show version extra
+ping 999.1.1.1
+conf t
+interface zzz
+no frobnicate
+enable
+ip route 10.0.0.0 255.255.255.0 999.999.999.999
+hostname Fine
+end
+disable

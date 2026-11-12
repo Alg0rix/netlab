@@ -1,0 +1,234 @@
+## netlab-golden v1
+## id: c11-show-bank-switch
+## src-sha: d0896a8f4998ea1d
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+SW> enable
+SW# conf t
+SW(config)# vlan 20
+SW(config-vlan)# name red
+SW(config-vlan)# state suspend
+SW(config-vlan)# exit
+SW(config)# interface f0/1
+SW(config-if)# switchport mode trunk
+SW(config-if)# switchport trunk allowed vlan 10,20
+SW(config-if)# exit
+SW(config)# interface fast0/2
+SW(config-if)# switchport mode access
+SW(config-if)# exit
+SW(config)# interface fastethernet0/4
+SW(config-if)# description unused
+SW(config-if)# exit
+SW(config)# end
+## tick: +10
+SW# show vlan
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                               active    FastEthernet0/2, FastEthernet0/4, FastEthernet0/5, FastEthernet0/6, FastEthernet0/7, FastEthernet0/8, FastEthernet0/9, FastEthernet0/10, FastEthernet0/11, FastEthernet0/12, FastEthernet0/13, FastEthernet0/14, FastEthernet0/15, FastEthernet0/16
+10   blue                                  active    FastEthernet0/3
+20   red                                   suspended
+1002 fddi-default                          active
+1003 token-ring                            active
+1004 fddinet                               active
+1005 trnet                                 active
+SW# show vlan brief
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                               active    FastEthernet0/2, FastEthernet0/4, FastEthernet0/5, FastEthernet0/6, FastEthernet0/7, FastEthernet0/8, FastEthernet0/9, FastEthernet0/10, FastEthernet0/11, FastEthernet0/12, FastEthernet0/13, FastEthernet0/14, FastEthernet0/15, FastEthernet0/16
+10   blue                                  active    FastEthernet0/3
+20   red                                   suspended
+1002 fddi-default                          active
+1003 token-ring                            active
+1004 fddinet                               active
+1005 trnet                                 active
+SW# show mac address-table
+          Mac Address Table
+-------------------------------------------
+
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+SW# show switchport
+Name: FastEthernet0/1
+Switchport: Enabled
+Administrative Mode: static trunk
+Operational Mode: trunk
+Access Mode VLAN: 1
+Trunking VLANs Allowed: 10,20
+Name: FastEthernet0/2
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/3
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 10
+Name: FastEthernet0/4
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/5
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/6
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/7
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/8
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/9
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/10
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/11
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/12
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/13
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/14
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/15
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+Name: FastEthernet0/16
+Switchport: Enabled
+Administrative Mode: static access
+Operational Mode: access
+Access Mode VLAN: 1
+SW# show ip interface brief
+Interface              IP-Address      OK? Method Status                Protocol
+FastEthernet0/1        unassigned      YES unset  up                    up
+FastEthernet0/2        unassigned      YES unset  up                    up
+FastEthernet0/3        unassigned      YES unset  up                    down
+FastEthernet0/4        unassigned      YES unset  up                    down
+FastEthernet0/5        unassigned      YES unset  up                    down
+FastEthernet0/6        unassigned      YES unset  up                    down
+FastEthernet0/7        unassigned      YES unset  up                    down
+FastEthernet0/8        unassigned      YES unset  up                    down
+FastEthernet0/9        unassigned      YES unset  up                    down
+FastEthernet0/10       unassigned      YES unset  up                    down
+FastEthernet0/11       unassigned      YES unset  up                    down
+FastEthernet0/12       unassigned      YES unset  up                    down
+FastEthernet0/13       unassigned      YES unset  up                    down
+FastEthernet0/14       unassigned      YES unset  up                    down
+FastEthernet0/15       unassigned      YES unset  up                    down
+FastEthernet0/16       unassigned      YES unset  up                    down
+SW# show interfaces
+FastEthernet0/1 is up, line protocol is up
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/2 is up, line protocol is up
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/3 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/4 is down, line protocol is down
+  Description: unused
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/5 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/6 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/7 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/8 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/9 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/10 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/11 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/12 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/13 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/14 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/15 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+FastEthernet0/16 is down, line protocol is down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+SW# show status
+SW (switch)
+16 ports, tick 10
+powered: true
+SW# show running-config
+hostname SW
+!
+interface FastEthernet0/1
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20
+ no shutdown
+!
+interface FastEthernet0/3
+ switchport access vlan 10
+ no shutdown
+!
+interface FastEthernet0/4
+ description unused
+ no shutdown
+!
+vlan 1
+ name default
+vlan 10
+ name blue
+vlan 20
+ name red
+ state suspend
+vlan 1002
+ name fddi-default
+vlan 1003
+ name token-ring
+vlan 1004
+ name fddinet
+vlan 1005
+ name trnet
+!
+no service dhcp
+end
+SW# show startup-config
+%% Non-volatile configuration memory is not present
+SW# show version
+netlab-core CLI engine
+device kind: switch
+SW# show logging buffered
+%LINK-5-CHANGED: Interface FastEthernet0/1, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/1, changed state to up
+%LINK-5-CHANGED: Interface FastEthernet0/2, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/2, changed state to up
+!prompt SW#

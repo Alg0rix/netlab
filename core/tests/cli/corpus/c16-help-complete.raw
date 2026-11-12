@@ -1,0 +1,36 @@
+## netlab-corpus v1
+## id: c16-help-complete
+## kind: switch
+## topo: single-switch
+## provenance: authored
+## note: ? rows/inline/caret and tab line/list/caret at every reachable
+## note: mode; hidden nodes absent; trailing-space operands are verbatim.
+## note: Lines below ending in a space carry a trailing-space operand.
+
+## key: ?
+enable
+## key: ?
+## key: ? en
+## key: ? enable 
+## key: ? show 
+## key: ? show ip 
+## key: ? ping 
+## key: ? show bogus 
+## key: tab sh
+## key: tab e
+## key: tab show ver
+## key: tab bogus
+## key: tab
+conf t
+## key: ?
+## key: ? ip 
+interface fa0/1
+## key: ?
+## key: ? switchport 
+exit
+vlan 30
+## key: ?
+end
+reload
+## key: ?
+## key: ctrlc

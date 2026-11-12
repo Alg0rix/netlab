@@ -1,0 +1,17 @@
+## netlab-corpus v1
+## id: c13-script-prelude-dedup
+## kind: router
+## provenance: authored
+## note: leading enable+configure-terminal collapse into ONE synthesized
+## note: prelude; mid-script prelude words pass verbatim and error honestly.
+
+## script
+enable
+configure terminal
+hostname Dedup
+enable
+conf t
+end
+## endscript
+
+show running-config

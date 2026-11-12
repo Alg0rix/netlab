@@ -220,7 +220,7 @@ function restore(data) {
     for (const a of n.acls ?? []) {
       for (const e of a.entries ?? []) {
         const proto = PROTO_NAME[e.proto] || (typeof e.proto === 'string' ? e.proto : 'ip');
-        lab.acl_add(id, a.num, !!e.permit, proto, e.src, e.src_wild, e.dst, e.dst_wild, e.sport || 0, e.dport || 0);
+        lab.acl_add(id, { num: a.num, permit: !!e.permit, proto, src: e.src, src_wild: e.src_wild, dst: e.dst, dst_wild: e.dst_wild, sport: e.sport || 0, dport: e.dport || 0 });
       }
     }
     (n.ports ?? []).forEach((p, i) => {
@@ -245,6 +245,7 @@ function restore(data) {
     if (n.resolver) lab.set_dns(id, n.resolver);
     for (const r of n.routes ?? []) if (r.proto !== 'O') lab.add_route(id, r.prefix, r.mask, r.next_hop, r.out_port);
     if (n.powered === false) lab.set_power(id, false);
+    lab.baseline_commit(id);
   }
   for (const l of data?.links ?? []) {
     const a = idmap.get(l.a), b = idmap.get(l.b);
@@ -2491,7 +2492,7 @@ function aclSection(id, d) {
     const port = +$('[data-port]', s).value || 0;
     if (!(num >= 1 && num <= 199)) return toast('ACL number is 1–199', 'err');
     checkpoint();
-    if (!lab.acl_add(id, num, $('[data-act]', s).value === 'permit', proto, '0.0.0.0', '255.255.255.255', '0.0.0.0', '255.255.255.255', 0, port)) return toast('ACL entry was not added', 'err');
+    if (!lab.acl_add(id, { num, permit: $('[data-act]', s).value === 'permit', proto, src: '0.0.0.0', src_wild: '255.255.255.255', dst: '0.0.0.0', dst_wild: '255.255.255.255', sport: 0, dport: port })) return toast('ACL entry was not added', 'err');
     refresh(); dirty(); renderInspector(true);
   };
   $('[data-grp]', s).onclick = () => {

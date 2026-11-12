@@ -1,0 +1,22 @@
+## netlab-corpus v1
+## id: c08-no-forms
+## kind: router
+## provenance: authored
+## note: `no` tuple-match removal, miss -> silent Ok, `default` alias.
+
+enable
+conf t
+ip route 10.9.0.0 255.255.255.0 10.0.0.1
+no ip route 10.9.0.0 255.255.255.0 10.0.0.1
+no ip route 10.9.0.0 255.255.255.0 10.0.0.1
+ip route 10.9.0.0 255.255.255.0 10.0.0.1
+no ip route 10.9.0.0 255.255.255.0
+default hostname
+hostname Named
+default hostname
+interface g0/0
+no shutdown
+default shutdown
+no shutdown
+exit
+end

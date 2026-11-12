@@ -1,0 +1,27 @@
+## netlab-corpus v1
+## id: c01-modes-ladder
+## kind: router
+## provenance: authored
+## note: the mode ladder — exec->priv->config->config-if->config-router,
+## note: end/exit/ctrlz at every seat, do-in-config, admits guards.
+
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+description uplink
+exit
+router ospf 1
+network 10.0.0.0 0.0.0.255 area 0
+end
+configure terminal
+do show version
+enable
+## key: ctrlz
+## key: ctrlz
+disable
+## key: ctrlz
+exit

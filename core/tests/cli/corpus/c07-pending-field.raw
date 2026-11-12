@@ -1,0 +1,18 @@
+## netlab-corpus v1
+## id: c07-pending-field
+## kind: router
+## provenance: authored
+## note: copy run start — Field arm, ? shows the armed prompt, a bad
+## note: filename errors, a good filename writes, ctrlc aborts.
+
+# blank-line submits are unreachable from .raw grammar (blank step lines
+# are skipped separators, space-leading lines are parse errors) — the
+# default-on-blank path stays pinned by cli_smoke's pending tests.
+enable
+copy running-config startup-config
+## key: ?
+bogus.cfg
+copy running-config startup-config
+startup-config
+copy running-config startup-config
+## key: ctrlc

@@ -1,0 +1,26 @@
+## netlab-golden v1
+## id: c09-kind-gates
+## src-sha: bc21cbf8dab0831b
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+SW> enable
+SW# conf t
+SW(config)# interface fa0/1
+SW(config-if)# ip address 10.0.0.1 255.255.255.0
+!err % Feature not supported on this device
+SW(config-if)# ip access-group 10 in
+!err % Feature not supported on this device
+SW(config-if)# switchport mode access
+SW(config-if)# switchport access vlan 10
+SW(config-if)# exit
+SW(config)# ip proxy-arp
+!err % Feature not supported on this device
+SW(config)# ip directed-broadcast
+!err % Feature not supported on this device
+SW(config)# ip routing
+SW(config)# no ip routing
+SW(config)# service dhcp
+SW(config)# end
+!prompt SW#

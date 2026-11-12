@@ -1,0 +1,36 @@
+## netlab-corpus v1
+## id: c05-abbrev-ifname
+## kind: router
+## ifmap: g0/0,g0/1,g0/2,g0/3,g0/4,g0/5,g0/6,g0/7
+## provenance: authored
+## note: every canonical prefix of the type word resolves, plus command
+## note: abbreviations and the unique-prefix vs ambiguous boundary.
+
+enable
+conf t
+interface g0/0
+interface gi0/0
+interface gig0/0
+interface giga0/0
+interface gigab0/0
+interface gigabi0/0
+interface gigabit0/0
+interface gigabite0/0
+interface gigabitet0/0
+interface gigabiteth0/0
+interface gigabiteithet0/0
+interface gigabitethe0/0
+interface gigabitether0/0
+interface gigabitethene0/0
+interface gigabitethern0/0
+interface gigabitetherne0/0
+interface gigabitethernet0/0
+exit
+end
+sh ip int br
+dis
+en
+conf t
+int g0/1
+end
+sh ver

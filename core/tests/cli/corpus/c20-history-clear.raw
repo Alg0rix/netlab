@@ -1,0 +1,32 @@
+## netlab-corpus v1
+## id: c20-history-clear
+## kind: router
+## topo: two-router-link
+## provenance: authored
+## note: exec lines enter history, key/drain steps never do; size arm
+## note: re-binds the ring; clears are session ops; link-flap events
+## note: drain deterministically off the wired r1 port.
+
+enable
+conf t
+hostname H1
+interface g0/0
+no shutdown
+shutdown
+no shutdown
+exit
+end
+## drain
+show history
+terminal history size 3
+show history
+terminal history size 0
+show history
+terminal history size 10
+show version
+clear arp-cache
+clear counters
+clear ip route *
+clear mac address-table
+show logging buffered
+show history

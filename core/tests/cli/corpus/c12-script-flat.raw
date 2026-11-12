@@ -1,0 +1,23 @@
+## netlab-corpus v1
+## id: c12-script-flat
+## kind: router
+## provenance: authored
+## note: flat config batch via run_script — synthesized prelude, echo per
+## note: line, `!` comments consumed for lineno, error collected not fatal.
+
+enable
+conf t
+hostname Before
+end
+
+## script
+hostname Scripted
+!
+interface g0/0
+ip address 10.7.0.1 255.255.255.0
+bogus-command
+no shutdown
+end
+## endscript
+
+show ip interface brief

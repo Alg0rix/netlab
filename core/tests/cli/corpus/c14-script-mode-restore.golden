@@ -1,0 +1,30 @@
+## netlab-golden v1
+## id: c14-script-mode-restore
+## src-sha: b4c6f87157ee9e7a
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# conf t
+R(config)# interface g0/0
+## script
+R> enable
+R# configure terminal
+R(config)# interface g0/1
+R(config-if)# description nested
+R(config-if)# reload
+System configuration has been modified. Save? [yes/no]: no
+## endscript
+R(config-if)# show ip interface brief
+Interface              IP-Address      OK? Method Status                Protocol
+GigabitEthernet0/0     unassigned      YES unset  administratively down down
+GigabitEthernet0/1     unassigned      YES unset  administratively down down
+GigabitEthernet0/2     unassigned      YES unset  administratively down down
+GigabitEthernet0/3     unassigned      YES unset  administratively down down
+GigabitEthernet0/4     unassigned      YES unset  administratively down down
+GigabitEthernet0/5     unassigned      YES unset  administratively down down
+GigabitEthernet0/6     unassigned      YES unset  administratively down down
+GigabitEthernet0/7     unassigned      YES unset  administratively down down
+R(config-if)# end
+!prompt R#

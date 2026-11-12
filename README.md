@@ -146,7 +146,7 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
 
 Double-click any node on the canvas (or select it and open the **Console** tab in the bottom dock) to access its interactive shell. Both shells support **Tab** completion, command history (`↑`/`↓`), and contextual **`?`** help.
 
-The commands below belong to the browser console. `netlab-core` also contains an IOS-style CLI engine with a full mode ladder, confirmation dialogs, and script paste. See [`docs/cli.md`](docs/cli.md) for its command surface and its unsupported commands.
+The commands below belong to the browser console. `netlab-core` also contains an IOS-style CLI engine with a full mode ladder, confirmation dialogs, and script paste. See [`docs/cli.md`](docs/cli.md) for its command surface and its unsupported commands, [`docs/wasm-api.md`](docs/wasm-api.md) for its JavaScript exports, and [`docs/corpus.md`](docs/corpus.md) for its transcript tests.
 
 ### End Hosts (`VPCS` / `Laptop` / `Server`)
 

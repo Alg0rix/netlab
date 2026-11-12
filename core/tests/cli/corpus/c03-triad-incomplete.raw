@@ -1,0 +1,16 @@
+## netlab-corpus v1
+## id: c03-triad-incomplete
+## kind: router
+## provenance: authored
+## note: verbs whose grammar continues — `% Incomplete command.` everywhere.
+
+enable
+show
+ping
+configure
+conf t
+ip route
+ip route 10.0.0.0
+hostname
+interface
+end

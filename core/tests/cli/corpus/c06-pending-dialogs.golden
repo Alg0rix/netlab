@@ -1,0 +1,59 @@
+## netlab-golden v1
+## id: c06-pending-dialogs
+## src-sha: 5fdb54817413983e
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# reload
+## key: ?
+!rows 15
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+  disable user exec
+  configure configure
+  copy copy
+  write write
+  erase erase
+  reload reload
+  clear clear
+!pending "System configuration has been modified. Save? [yes/no]: "
+System configuration has been modified. Save? [yes/no]: show version
+System configuration has been modified. Save? [yes/no]: en
+System configuration has been modified. Save? [yes/no]: no
+## key: ?
+!rows 15
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+  disable user exec
+  configure configure
+  copy copy
+  write write
+  erase erase
+  reload reload
+  clear clear
+!pending "Proceed with reload? [confirm] "
+## key: ctrlc
+^C
+!prompt R#
+R# reload
+System configuration has been modified. Save? [yes/no]: n
+Proceed with reload? [confirm] yes
+!intent reload
+R# reload
+## key: ctrlz
+!prompt R#
+!prompt R#

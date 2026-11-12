@@ -1,0 +1,20 @@
+## netlab-corpus v1
+## id: c18-nvgen-seeds
+## kind: router
+## topo: ospf-pair
+## provenance: authored
+## note: show running-config IS nvgen — this golden is the P03 seed:
+## note: seeded rig + exec mutations in canonical K14 stanza order.
+
+enable
+conf t
+hostname OspfCore
+interface g0/1
+ip address 172.16.0.1 255.255.255.0
+description core-link
+no shutdown
+exit
+router ospf 1
+router-id 1.1.1.1
+end
+show running-config

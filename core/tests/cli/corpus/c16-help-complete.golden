@@ -1,0 +1,171 @@
+## netlab-golden v1
+## id: c16-help-complete
+## src-sha: 826ae6970824b127
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+## key: ?
+!rows 8
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+!prompt SW>
+SW> enable
+## key: ?
+!rows 15
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+  disable user exec
+  configure configure
+  copy copy
+  write write
+  erase erase
+  reload reload
+  clear clear
+!prompt SW#
+## key: ? en
+!rows 1
+  enable privileged exec
+!prompt SW#
+## key: ? enable
+!inline <cr>
+!prompt SW#
+## key: ? show
+!rows 12
+  arp ARP table
+  history history
+  interfaces interfaces
+  ip IP
+  logging logging
+  mac MAC
+  running-config running config
+  startup-config startup config
+  status status
+  switchport switchport
+  vlan VLANs
+  version version
+!prompt SW#
+## key: ? show ip
+!rows 7
+  access-lists ACLs
+  dhcp DHCP
+  interface interfaces
+  nat NAT
+  ospf OSPF
+  protocols protocols
+  route routing table
+!prompt SW#
+## key: ? ping
+!rows 1
+  <A.B.C.D> <A.B.C.D>
+!prompt SW#
+## key: ? show bogus
+!caret 5
+!prompt SW#
+## key: tab sh
+!line show
+!prompt SW#
+## key: tab e
+!list enable exit erase
+!prompt SW#
+## key: tab show ver
+!line show version
+!prompt SW#
+## key: tab bogus
+!caret 0
+!prompt SW#
+## key: tab
+!caret 0
+!prompt SW#
+SW# conf t
+## key: ?
+!rows 11
+  hostname hostname
+  interface interface
+  vlan VLAN
+  access-list ACL
+  ip IP
+  service service
+  no negate
+  default set to default
+  do run an exec command
+  end end config
+  exit exit config
+!prompt SW(config)#
+## key: ? ip
+!rows 7
+  domain-lookup DNS lookups
+  route static route
+  routing IP routing
+  proxy-arp proxy ARP
+  directed-broadcast directed broadcast
+  dhcp DHCP
+  nat NAT
+!prompt SW(config)#
+SW(config)# interface fa0/1
+## key: ?
+!rows 9
+  description description
+  ip IP
+  switchport switchport
+  shutdown shutdown
+  no negate
+  default set to default
+  do run an exec command
+  end end config
+  exit exit config
+!prompt SW(config-if)#
+## key: ? switchport
+!rows 3
+  mode mode
+  access access
+  trunk trunk
+!prompt SW(config-if)#
+SW(config-if)# exit
+SW(config)# vlan 30
+## key: ?
+!rows 7
+  name name
+  state state
+  no negate
+  default set to default
+  do run an exec command
+  end end config
+  exit exit config
+!prompt SW(config-vlan)#
+SW(config-vlan)# end
+SW# reload
+## key: ?
+!rows 15
+  enable privileged exec
+  exit exit session
+  logout log out
+  ping ping
+  traceroute traceroute
+  show show
+  terminal terminal
+  do run an exec command
+  disable user exec
+  configure configure
+  copy copy
+  write write
+  erase erase
+  reload reload
+  clear clear
+!pending "System configuration has been modified. Save? [yes/no]: "
+## key: ctrlc
+^C
+!prompt SW#
+!prompt SW#

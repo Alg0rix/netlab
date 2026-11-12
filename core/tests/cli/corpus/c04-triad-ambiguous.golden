@@ -1,0 +1,26 @@
+## netlab-golden v1
+## id: c04-triad-ambiguous
+## src-sha: 55e8b228c4737740
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# e
+!err % Ambiguous command
+R# c
+!err % Ambiguous command
+R# t
+!err % Ambiguous command
+R# conf t
+R(config)# d
+!err % Ambiguous command
+R(config)# e
+!err % Ambiguous command
+R(config)# interface g0/0
+R(config-if)# d
+!err % Ambiguous command
+R(config-if)# e
+!err % Ambiguous command
+R(config-if)# end
+!prompt R#

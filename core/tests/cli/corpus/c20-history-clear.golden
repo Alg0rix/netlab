@@ -1,0 +1,67 @@
+## netlab-golden v1
+## id: c20-history-clear
+## src-sha: 0148deb314ba1671
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R1> enable
+R1# conf t
+R1(config)# hostname H1
+!intent rename H1
+H1(config)# interface g0/0
+H1(config-if)# no shutdown
+H1(config-if)# shutdown
+H1(config-if)# no shutdown
+H1(config-if)# exit
+H1(config)# end
+## drain
+!event link %LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to up
+!event link %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to up
+!event link %LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to down
+!event link %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to down
+!event link %LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to up
+!event link %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to up
+H1# show history
+enable
+conf t
+hostname H1
+interface g0/0
+no shutdown
+shutdown
+no shutdown
+exit
+end
+H1# terminal history size 3
+H1# show history
+end
+show history
+terminal history size 3
+H1# terminal history size 0
+H1# show history
+% No history in this session
+H1# terminal history size 10
+H1# show version
+netlab-core CLI engine
+device kind: router
+H1# clear arp-cache
+H1# clear counters
+H1# clear ip route *
+H1# clear mac address-table
+!err % Incomplete command.
+H1# show logging buffered
+%LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to up
+%LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to down
+%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to down
+%LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to up
+H1# show history
+terminal history size 10
+show version
+clear arp-cache
+clear counters
+clear ip route *
+clear mac address-table
+show logging buffered
+!prompt H1#

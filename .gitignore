@@ -12,5 +12,6 @@ emu/shim/*.a
 emu/*.wat
 __pycache__/
 .DS_Store
-web/_test/
+web/_test/*
+!web/_test/corpus-steps.json
 .wrangler/

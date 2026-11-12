@@ -1,0 +1,37 @@
+## netlab-golden v1
+## id: c01-modes-ladder
+## src-sha: 8b22f34a7b59eeb2
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R> enable
+R# configure terminal
+R(config)# interface g0/0
+R(config-if)# ip address 10.0.0.1 255.255.255.0
+R(config-if)# no shutdown
+R(config-if)# exit
+R(config)# interface g0/1
+R(config-if)# description uplink
+R(config-if)# exit
+R(config)# router ospf 1
+R(config-router)# network 10.0.0.0 0.0.0.255 area 0
+R(config-router)# end
+R# configure terminal
+R(config)# do show version
+netlab-core CLI engine
+device kind: router
+R(config)# enable
+           ^
+!err % Invalid input detected at '^' marker.
+## key: ctrlz
+!prompt R#
+## key: ctrlz
+!prompt R#
+R# disable
+## key: ctrlz
+!prompt R>
+R> exit
+con0 is now available
+Press RETURN to get started.
+!prompt R>

@@ -1,0 +1,14 @@
+## netlab-corpus v1
+## id: c17-events-pinned
+## kind: host
+## topo: nat-dhcp
+## provenance: authored
+## note: the DHCP exchange — every event hops the single link in a strict
+## note: request->reply chain, so the !event drain order is pinned.
+## note: `ip dhcp` on a bound client re-arms and repeats the exchange.
+
+ip dhcp
+## tick: +40
+ip dhcp
+## tick: +40
+ip 192.168.1.99 255.255.255.0 192.168.1.1

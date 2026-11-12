@@ -1,0 +1,22 @@
+## netlab-corpus v1
+## id: c09-kind-gates
+## kind: switch
+## topo: single-switch
+## provenance: authored
+## note: lines that PARSE on a switch but whose setter is kind-gated emit
+## note: `% Feature not supported`; switchport/vlan lines succeed.
+
+enable
+conf t
+interface fa0/1
+ip address 10.0.0.1 255.255.255.0
+ip access-group 10 in
+switchport mode access
+switchport access vlan 10
+exit
+ip proxy-arp
+ip directed-broadcast
+ip routing
+no ip routing
+service dhcp
+end

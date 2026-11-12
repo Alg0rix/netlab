@@ -1,0 +1,28 @@
+## netlab-golden v1
+## id: c13-script-prelude-dedup
+## src-sha: 7fdddd0331ccf34c
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+## script
+R> enable
+R# configure terminal
+R(config)# hostname Dedup
+!intent rename Dedup
+Dedup(config)# enable
+               ^
+!err % Invalid input detected at '^' marker.
+Dedup(config)# conf t
+               ^
+!err % Invalid input detected at '^' marker.
+Dedup(config)# end
+!error 4 % Invalid input detected at '^' marker.
+!error 5 % Invalid input detected at '^' marker.
+## endscript
+Dedup> show running-config
+hostname Dedup
+!
+no service dhcp
+end
+!prompt Dedup>

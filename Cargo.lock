@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "netlab-core",
+ "serde",
  "serde_json",
  "wasm-bindgen",
 ]

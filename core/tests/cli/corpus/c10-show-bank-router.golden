@@ -1,0 +1,113 @@
+## netlab-golden v1
+## id: c10-show-bank-router
+## src-sha: a6d795a9741af000
+## provenance: authored
+## generated-by: NETLAB_GOLDEN=write cargo test
+## do-not-edit
+
+R1> enable
+R1# conf t
+R1(config)# access-list 10 permit ip any any
+R1(config)# access-list 10 deny icmp host 10.0.0.5 any
+R1(config)# ip nat inside source static 192.168.1.10 203.0.113.10
+R1(config)# ip dhcp excluded-address 192.168.1.1 192.168.1.20
+R1(config)# service dhcp
+R1(config)# end
+R1# show ip interface brief
+Interface              IP-Address      OK? Method Status                Protocol
+GigabitEthernet0/0     10.0.0.1        YES manual up                    up
+GigabitEthernet0/1     unassigned      YES unset  administratively down down
+GigabitEthernet0/2     unassigned      YES unset  administratively down down
+GigabitEthernet0/3     unassigned      YES unset  administratively down down
+GigabitEthernet0/4     unassigned      YES unset  administratively down down
+GigabitEthernet0/5     unassigned      YES unset  administratively down down
+GigabitEthernet0/6     unassigned      YES unset  administratively down down
+GigabitEthernet0/7     unassigned      YES unset  administratively down down
+R1# show ip route
+Codes: C - connected, S - static, O - OSPF
+
+C    10.0.0.0/24      is directly connected, GigabitEthernet0/0
+S    10.9.0.0/24      [1/0] via 10.0.0.2, GigabitEthernet0/0
+R1# show arp
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+R1# show ip access-lists
+Extended IP access list 10
+    10 permit ip any any
+    20 deny icmp host 10.0.0.5 host 10.0.0.5
+R1# show ip ospf
+ Routing Process "ospf 1" with ID 10.0.0.1
+    Network 10.0.0.0 0.0.0.255 area 0
+R1# show ip ospf neighbor
+Neighbor ID     Pri   State           Dead Time   Address         Interface
+R1# show ip ospf interface
+GigabitEthernet0/0 is up, line protocol is up
+  Internet Address 10.0.0.1, Area 0
+R1# show ip nat translations
+Pro Inside global      Inside local       Outside local      Outside global
+--- 203.0.113.10         192.168.1.10
+R1# show ip dhcp binding
+IP address       Client-Identifier        Lease expiration     Type
+% No DHCP bindings
+R1# show ip protocols
+Routing Protocol is enabled
+Routing Protocol is "ospf 1"
+R1# show interfaces
+GigabitEthernet0/0 is up, line protocol is up
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/1 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/2 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/3 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/4 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/5 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/6 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+GigabitEthernet0/7 is administratively down, line protocol is administratively down
+  MTU 1500 bytes, 0 packets input, 0 packets output
+R1# show running-config
+hostname R1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+router ospf 1
+ network 10.0.0.0 0.0.0.255 area 0
+!
+ip route 10.9.0.0 255.255.255.0 10.0.0.2
+!
+access-list 10 permit ip any any
+access-list 10 deny icmp host 10.0.0.5 host 10.0.0.5
+!
+ip nat inside source static 192.168.1.10 203.0.113.10
+!
+ip dhcp excluded-address 192.168.1.1 192.168.1.20
+end
+R1# show startup-config
+%% Non-volatile configuration memory is not present
+R1# show status
+R1 (router)
+8 ports, tick 100
+powered: true
+R1# show version
+netlab-core CLI engine
+device kind: router
+R1# show history
+show ip ospf neighbor
+show ip ospf interface
+show ip nat translations
+show ip dhcp binding
+show ip protocols
+show interfaces
+show running-config
+show startup-config
+show status
+show version
+R1# show logging buffered
+%LINK-5-CHANGED: Interface GigabitEthernet0/0, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to up
+!prompt R1#
