@@ -730,6 +730,19 @@ function runTicks(n) {
   const evs = JSON.parse(lab.drain_events());
   for (const ev of evs) recordEvent(ev);
   for (const c of consoles.values()) c.shell?.onEvents?.(evs);
+  // Flow signals carry every link enqueue — a realtime transit is shorter
+  // than the snapshot cadence, so trails must be seeded here, not by
+  // sighting l.frames.
+  const fnow = performance.now();
+  for (const fe of JSON.parse(lab.drain_flow())) {
+    const l = linkById.get(fe.link);
+    if (!l) continue;
+    const dir = l.a === fe.from ? 1 : -1;
+    trails.set(`${fe.link}:${dir}:${fe.proto || 'ext'}`,
+      { link: fe.link, dir, color: fe.proto, t0: dir > 0 ? 0 : 1, at0: fnow, t: dir > 0 ? 0 : 1, last: fnow });
+    flashes.push({ dev: fe.from, color: C['p-' + (fe.proto || 'ext')] || C['p-ext'], t0: fnow });
+    if (flashes.length > 60) flashes.shift();
+  }
   snapDirty = true;
 }
 const tick = () => { runTicks(1); refresh(); snapDirty = false; };

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::device::{Device, DeviceKind};
-use crate::events::SimEvent;
+use crate::events::{FlowEvent, SimEvent};
 use crate::frame::Frame;
 use crate::link::{Endpoint, InFlight, Link, LinkSpeed};
 use crate::{DeviceId, LinkId};
@@ -34,6 +34,9 @@ pub struct Topology {
     next_mac: u64,
     pub tick: u64,
     pub events: Vec<SimEvent>,
+    /// Per-enqueue flow signals for the canvas — drained by the host, never
+    /// rendered to a console.
+    pub flow: Vec<FlowEvent>,
     /// Host pacing hint — realtime ticks are wall milliseconds, simulation
     /// ticks are stepped. Probes space their sends by this mode.
     pub realtime: bool,
@@ -57,6 +60,7 @@ impl Topology {
             next_mac: BASE_MAC,
             tick: 0,
             events: Vec::new(),
+            flow: Vec::new(),
             realtime: false,
             rng: 0xA5A5_1234,
         }
@@ -338,6 +342,12 @@ impl Topology {
             }
         }
         if let Some(link) = self.links.get_mut(&link_id) {
+            self.flow.push(FlowEvent {
+                tick: self.tick,
+                link: link_id,
+                from: from.device,
+                proto: frame.color_key(),
+            });
             link.in_flight.push(InFlight {
                 frame,
                 progress: 0,
@@ -410,5 +420,9 @@ impl Topology {
 
     pub fn drain_events(&mut self) -> Vec<SimEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    pub fn drain_flow(&mut self) -> Vec<FlowEvent> {
+        std::mem::take(&mut self.flow)
     }
 }

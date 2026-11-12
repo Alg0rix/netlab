@@ -65,6 +65,11 @@ export class NetLab {
      */
     drain_ext(): Array<any>;
     /**
+     * JSON array of link-enqueue flow signals since the last call — feeds the
+     * canvas packet trails. Not console output; never parsed for wording.
+     */
+    drain_flow(): string;
+    /**
      * Inject real Ethernet wire bytes from an emulated node into an ext
      * device port.
      */
@@ -183,6 +188,7 @@ export interface InitOutput {
     readonly netlab_drain_captures: (a: number) => any;
     readonly netlab_drain_events: (a: number, b: number) => void;
     readonly netlab_drain_ext: (a: number) => any;
+    readonly netlab_drain_flow: (a: number, b: number) => void;
     readonly netlab_ext_inject: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly netlab_http_get: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly netlab_inject_link: (a: number, b: number, c: number, d: number, e: number) => number;

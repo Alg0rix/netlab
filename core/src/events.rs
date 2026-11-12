@@ -19,6 +19,18 @@ pub enum EvKind {
     Syslog,
 }
 
+/// Canvas-side flow signal — one per link enqueue. Drained through
+/// `NetLab::drain_flow`, never rendered to a console: a realtime transit is
+/// shorter than the host's snapshot cadence, so `l.frames` sampling alone
+/// misses most hops.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowEvent {
+    pub tick: u64,
+    pub link: LinkId,
+    pub from: DeviceId,
+    pub proto: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SimEvent {
     pub tick: u64,

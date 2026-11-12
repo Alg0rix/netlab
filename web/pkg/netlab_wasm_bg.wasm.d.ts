@@ -25,6 +25,7 @@ export const netlab_dns_query: (a: number, b: number, c: number, d: number) => n
 export const netlab_drain_captures: (a: number) => any;
 export const netlab_drain_events: (a: number, b: number) => void;
 export const netlab_drain_ext: (a: number) => any;
+export const netlab_drain_flow: (a: number, b: number) => void;
 export const netlab_ext_inject: (a: number, b: number, c: number, d: number, e: number) => void;
 export const netlab_http_get: (a: number, b: number, c: number, d: number, e: number) => number;
 export const netlab_inject_link: (a: number, b: number, c: number, d: number, e: number) => number;

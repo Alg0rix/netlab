@@ -282,6 +282,12 @@ impl NetLab {
         serde_json::to_string(&self.topo.drain_events()).unwrap_or_else(|_| "[]".into())
     }
 
+    /// JSON array of link-enqueue flow signals since the last call — feeds the
+    /// canvas packet trails. Not console output; never parsed for wording.
+    pub fn drain_flow(&mut self) -> String {
+        serde_json::to_string(&self.topo.drain_flow()).unwrap_or_else(|_| "[]".into())
+    }
+
     /// Inject real Ethernet wire bytes from an emulated node into an ext
     /// device port.
     pub fn ext_inject(&mut self, dev: u32, port: usize, bytes: &[u8]) {

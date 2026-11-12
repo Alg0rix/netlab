@@ -128,6 +128,10 @@ The probe replies arrive as simulation events. Read them with `drain_events()` a
 
 `cli_exec` and `cli_script` put simulation events in the topology event queue. Read them with `drain_events()`. `cli_key` discards events.
 
+## Flow signals
+
+`drain_flow()` returns one `{tick, link, from, proto}` record per link enqueue since the last call. It feeds the canvas packet trails. A realtime transit is shorter than the snapshot cadence, so `l.frames` sampling alone misses most hops. Flow signals are not console output; do not parse them for wording.
+
 ## apply_device_fields
 
 `apply_device_fields(dev, fields)` applies one node's lab-document seats in a single call. `fields` is a JSON object. `web/labyaml.js` builds it from the decoded node; call this export inside the decode loop, before `baseline_commit(dev)`.

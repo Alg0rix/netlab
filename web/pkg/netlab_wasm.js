@@ -421,6 +421,27 @@ export class NetLab {
         return ret;
     }
     /**
+     * JSON array of link-enqueue flow signals since the last call — feeds the
+     * canvas packet trails. Not console output; never parsed for wording.
+     * @returns {string}
+     */
+    drain_flow() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+            wasm.netlab_drain_flow(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Inject real Ethernet wire bytes from an emulated node into an ext
      * device port.
      * @param {number} dev
