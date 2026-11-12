@@ -2,7 +2,7 @@
 
 **netlab** is a zero-backend network simulation and emulation lab that runs entirely in the browser. It combines a deterministic **Rust → WebAssembly** L2/L3 switching and routing fabric with real hardware emulation compiled to WebAssembly—booting real **Cisco IOS routers & switches** (`c7200` / `c3725` with `NM-16ESW` 16-port EtherSwitch ASIC) via Dynamips and **MikroTik RouterOS / CRS Switches / Open vSwitch (Linux) / 32-bit x86 VMs** via v86 on the same virtual wire.
 
-No backend server, local agent, or cloud VM is required. Operating system images, NVRAM configurations, virtual disks, and topologies stay locally in your browser (`IndexedDB` / `localStorage`).
+No backend server, local daemon, or cloud VM is required. Operating system images, NVRAM configurations, virtual disks, and topologies stay locally in your browser (`IndexedDB` / `localStorage`).
 
 **Live demo:** https://netlab.rixlab.xyz
 
@@ -146,6 +146,8 @@ Nothing proprietary ships with **netlab**. Simulated nodes work out of the box; 
 
 Double-click any node on the canvas (or select it and open the **Console** tab in the bottom dock) to access its interactive shell. Both shells support **Tab** completion, command history (`↑`/`↓`), and contextual **`?`** help.
 
+The commands below belong to the browser console. `netlab-core` also contains an IOS-style CLI engine with a full mode ladder, confirmation dialogs, and script paste. See [`docs/cli.md`](docs/cli.md) for its command surface and its unsupported commands.
+
 ### End Hosts (`VPCS` / `Laptop` / `Server`)
 
 ```text
@@ -260,6 +262,7 @@ Static routes beat OSPF when the prefix length is the same. A longer OSPF prefix
 netlab/
 ├── core/                  # Pure-Rust network simulation engine (netlab-core)
 │   ├── src/
+│   │   ├── cli/           # IOS-style CLI engine: grammar, modes, dialogs, scripts (see docs/cli.md)
 │   │   ├── device.rs      # Host, Switch, Router, and Ext (emulated bridge) state
 │   │   ├── eth.rs         # Real Ethernet II / ARP / IPv4 / ICMP / TCP / UDP wire codec
 │   │   ├── services.rs    # DHCP, DNS, HTTP, TCP/UDP probes, source NAT, DHCP relay

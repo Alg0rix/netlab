@@ -12,6 +12,7 @@ mod actions;
 mod config;
 mod snapshot;
 
+pub use config::AceArgs;
 pub use snapshot::Snapshot;
 
 const LINK_DELAY: u32 = 4;
@@ -34,6 +35,12 @@ pub struct Topology {
     pub tick: u64,
     pub events: Vec<SimEvent>,
     rng: u32,
+}
+
+impl Default for Topology {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Topology {
@@ -153,6 +160,8 @@ impl Topology {
         self.devices.get_mut(&a)?.ports[pa].link = Some(id);
         self.devices.get_mut(&b)?.ports[pb].link = Some(id);
         self.links.insert(id, link);
+        self.refresh_link_state(a, pa);
+        self.refresh_link_state(b, pb);
         Some(id)
     }
 
@@ -162,7 +171,32 @@ impl Topology {
                 if let Some(d) = self.devices.get_mut(&ep.device) {
                     d.ports[ep.port].link = None;
                 }
+                self.refresh_link_state(ep.device, ep.port);
             }
+        }
+    }
+
+    /// Recompute carrier on one port from its link, then run the
+    /// effective-state machinery (C1/C2 pair, OSPF port-down, connected
+    /// route synthesis) when admin×carrier flips.
+    fn refresh_link_state(&mut self, dev_id: DeviceId, port: usize) {
+        let carrier = self
+            .devices
+            .get(&dev_id)
+            .and_then(|d| d.ports.get(port))
+            .and_then(|p| p.link)
+            .and_then(|l| self.links.get(&l))
+            .map(|l| l.up)
+            .unwrap_or(false);
+        let tick = self.tick;
+        if let Some(d) = self.devices.get_mut(&dev_id) {
+            let Some(p) = d.ports.get_mut(port) else {
+                return;
+            };
+            let was = p.admin_up && p.link_up;
+            p.link_up = carrier;
+            let now = p.admin_up && p.link_up;
+            crate::config::effective_changed(d, port, was, now, tick, &mut self.events);
         }
     }
 
@@ -175,11 +209,18 @@ impl Topology {
     /// Plug / unplug a cable without removing it. Unplugging drops whatever
     /// is in flight on it.
     pub fn set_link_up(&mut self, id: LinkId, up: bool) {
-        if let Some(l) = self.links.get_mut(&id) {
+        let eps = if let Some(l) = self.links.get_mut(&id) {
             l.up = up;
             if !up {
                 l.in_flight.clear();
             }
+            Some([l.a, l.b])
+        } else {
+            None
+        };
+        if let Some([a, b]) = eps {
+            self.refresh_link_state(a.device, a.port);
+            self.refresh_link_state(b.device, b.port);
         }
     }
 
@@ -200,7 +241,8 @@ impl Topology {
         for id in ids {
             if let Some(d) = self.devices.get_mut(&id) {
                 crate::services::poll(d, tick, &mut self.events);
-                crate::ospf::tick(d, tick);
+                crate::ospf::tick(d, tick, &mut self.events);
+                d.poll_probe(tick, &mut self.events);
             }
         }
 
@@ -221,17 +263,9 @@ impl Topology {
         }
 
         // deliver
-        for (to, frame, link_id) in arrivals {
+        for (to, frame, _link_id) in arrivals {
             if let Some(d) = self.devices.get_mut(&to.device) {
-                if !d.powered {
-                    self.events.push(SimEvent::new(
-                        self.tick,
-                        Some(d.id),
-                        Some(link_id),
-                        "drop",
-                        format!("{} is stopped \u{2014} {} lost", d.name, frame.label()),
-                    ));
-                } else if to.port < d.ports.len() {
+                if d.powered && to.port < d.ports.len() {
                     d.receive(frame, to.port, self.tick, &mut self.events);
                 }
             }
@@ -241,15 +275,15 @@ impl Topology {
         let mut tx: Vec<(LinkId, Endpoint, Frame)> = Vec::new();
         for d in self.devices.values_mut() {
             for (port, frame) in d.outbox.drain(..) {
-                match d.ports.get(port).and_then(|p| p.link) {
-                    Some(l) => tx.push((l, Endpoint { device: d.id, port }, frame)),
-                    None => self.events.push(SimEvent::new(
-                        self.tick,
-                        Some(d.id),
-                        None,
-                        "drop",
-                        format!("{}: port {} not connected", d.name, port),
-                    )),
+                let Some(p) = d.ports.get_mut(port) else {
+                    continue;
+                };
+                if !(p.admin_up && p.link_up) {
+                    continue;
+                }
+                p.stats.tx += 1;
+                if let Some(l) = p.link {
+                    tx.push((l, Endpoint { device: d.id, port }, frame));
                 }
             }
         }
@@ -272,52 +306,14 @@ impl Topology {
         let capture = link.capture;
         let to = link.other(from);
         if !up {
-            let name = |id| {
-                self.devices
-                    .get(&id)
-                    .map(|d: &Device| d.name.clone())
-                    .unwrap_or_default()
-            };
-            let msg = format!(
-                "cable {} \u{2194} {} is unplugged \u{2014} {} lost",
-                name(from.device),
-                name(to.device),
-                frame.label()
-            );
-            self.events.push(SimEvent::new(
-                self.tick,
-                Some(from.device),
-                Some(link_id),
-                "drop",
-                msg,
-            ));
             return;
         }
         let bytes = frame.raw.clone().or_else(|| crate::eth::encode(&frame));
         let len = bytes.as_ref().map(|b| b.len()).unwrap_or(0);
         if mtu > 0 && len as u16 > mtu {
-            self.events.push(SimEvent::new(
-                self.tick,
-                Some(from.device),
-                Some(link_id),
-                "drop",
-                format!(
-                    "{} dropped — {} bytes exceeds MTU {}",
-                    frame.label(),
-                    len,
-                    mtu
-                ),
-            ));
             return;
         }
         if loss > 0 && (self.rng() % 100) < loss as u32 {
-            self.events.push(SimEvent::new(
-                self.tick,
-                Some(from.device),
-                Some(link_id),
-                "drop",
-                format!("{} lost — link impairment {}%", frame.label(), loss),
-            ));
             return;
         }
         let swing = if jitter == 0 {
@@ -390,7 +386,7 @@ impl Topology {
     /// port `port`; decoded frame is queued onto that port's link.
     pub fn ext_inject(&mut self, dev: DeviceId, port: usize, bytes: &[u8]) {
         if let Some(d) = self.devices.get_mut(&dev) {
-            d.ext_inject(port, bytes, self.tick, &mut self.events);
+            d.ext_inject(port, bytes);
         }
     }
 

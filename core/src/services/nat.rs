@@ -13,16 +13,28 @@ pub struct NatEnt {
     pub outside_port: u16,
     pub peer_ip: [u8; 4],
     pub peer_port: u16,
+    pub created_tick: u64,
 }
 
 /// proto 0 is a 1:1 map of every protocol. proto 6 or 17 is one static port forward.
-/// The outside address is always the single outside interface.
+/// `inside_global` is the published address — when unset the outside port's
+/// own address is used (the legacy 1:1 form).
 #[derive(Clone, Debug)]
 pub struct StaticNat {
     pub proto: u8,
     pub inside_ip: [u8; 4],
+    pub inside_global: Option<[u8; 4]>,
     pub inside_port: u16,
     pub outside_port: u16,
+}
+
+/// The published outside address of a proto-0 static map, for ARP answers.
+pub fn nat_global(dev: &Device, ip: [u8; 4]) -> bool {
+    dev.kind == DeviceKind::Router
+        && dev
+            .static_nat
+            .iter()
+            .any(|s| s.proto == 0 && s.inside_global == Some(ip))
 }
 
 /// True when the frame was translated toward an inside host and should be forwarded.
@@ -36,7 +48,12 @@ pub fn nat_ingress(dev: &mut Device, frame: &mut Frame, in_port: usize) -> bool 
     let Some((outside_ip, _)) = dev.ports[in_port].ip else {
         return false;
     };
-    if frame.dst_ip != outside_ip {
+    let published = dev
+        .static_nat
+        .iter()
+        .filter(|s| s.proto == 0)
+        .any(|s| s.inside_global.map(|g| g == frame.dst_ip).unwrap_or(false));
+    if frame.dst_ip != outside_ip && !published {
         return false;
     }
     let (proto, _sport, dport, icmp_id) = l4_tuple(frame);
@@ -111,7 +128,17 @@ pub fn nat_ingress(dev: &mut Device, frame: &mut Frame, in_port: usize) -> bool 
             return true;
         }
     }
-    if let Some(map) = dev.static_nat.iter().find(|s| s.proto == 0).cloned() {
+    if let Some(map) = dev
+        .static_nat
+        .iter()
+        .find(|s| {
+            s.proto == 0
+                && s.inside_global
+                    .map(|g| g == frame.dst_ip)
+                    .unwrap_or(true)
+        })
+        .cloned()
+    {
         frame.dst_ip = map.inside_ip;
         if let Some(raw) = frame.raw.as_mut() {
             eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
@@ -122,7 +149,7 @@ pub fn nat_ingress(dev: &mut Device, frame: &mut Frame, in_port: usize) -> bool 
 }
 
 /// Masquerade packets that are about to leave via an outside interface.
-pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>) {
+pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>, tick: u64) {
     if dev.kind != DeviceKind::Router {
         return;
     }
@@ -148,12 +175,13 @@ pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>) {
         return;
     };
     let (proto, sport, dport, icmp_id) = l4_tuple(frame);
-    if dev
+    if let Some(global) = dev
         .static_nat
         .iter()
-        .any(|s| s.proto == 0 && s.inside_ip == frame.src_ip)
+        .find(|s| s.proto == 0 && s.inside_ip == frame.src_ip)
+        .map(|s| s.inside_global.unwrap_or(outside_ip))
     {
-        frame.src_ip = outside_ip;
+        frame.src_ip = global;
         if let Some(raw) = frame.raw.as_mut() {
             eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
         }
@@ -219,6 +247,7 @@ pub fn nat_egress(dev: &mut Device, frame: &mut Frame, in_port: Option<usize>) {
         outside_port,
         peer_ip: frame.dst_ip,
         peer_port,
+        created_tick: tick,
     });
     if dev.nat.len() > 256 {
         dev.nat.drain(0..64);

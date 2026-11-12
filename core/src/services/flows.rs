@@ -2,7 +2,7 @@
 
 use crate::device::{Device, DeviceKind};
 use crate::eth::{self, view_ip};
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::Frame;
 use crate::ip_str;
 
@@ -24,11 +24,11 @@ pub enum FlowKind {
 }
 
 impl FlowKind {
-    fn event_kind(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
-            FlowKind::Http => "http",
-            FlowKind::Udp => "udp",
-            _ => "tcp",
+            FlowKind::Http => "HTTP",
+            FlowKind::Udp => "UDP",
+            _ => "TCP",
         }
     }
 }
@@ -58,14 +58,13 @@ pub(super) fn poll_flows(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>
     while i < dev.flows.len() {
         if tick >= dev.flows[i].deadline && dev.flows[i].state != FlowState::Done {
             let f = dev.flows.remove(i);
-            let kind = f.kind.event_kind();
             let msg = format!(
                 "{} {}:{} timeout",
-                kind.to_ascii_uppercase(),
+                f.kind.label(),
                 ip_str(f.rip),
                 f.rport
             );
-            note(events, tick, dev, kind, &msg);
+            note(events, tick, dev, EvKind::Syslog, &msg);
         } else {
             i += 1;
         }
@@ -81,13 +80,7 @@ pub fn start_tcp(
     events: &mut Vec<SimEvent>,
 ) -> bool {
     let Some(src) = dev.first_ip() else {
-        note(
-            events,
-            tick,
-            dev,
-            if http { "http" } else { "tcp" },
-            "no IPv4 address",
-        );
+        note(events, tick, dev, EvKind::Syslog, "no IPv4 address");
         return false;
     };
     let sport = alloc_port(dev);
@@ -116,15 +109,16 @@ pub fn start_tcp(
     send_tcp(
         dev,
         src,
-        sport,
         dst,
-        dport,
-        seq,
-        0,
-        TCP_SYN,
+        eth::TcpHdr {
+            sport,
+            dport,
+            seq,
+            ack: 0,
+            flags: TCP_SYN,
+        },
         &[],
         tick,
-        events,
     );
     true
 }
@@ -138,7 +132,7 @@ pub fn start_udp(
     events: &mut Vec<SimEvent>,
 ) -> bool {
     let Some(src) = dev.first_ip() else {
-        note(events, tick, dev, "udp", "no IPv4 address");
+        note(events, tick, dev, EvKind::Syslog, "no IPv4 address");
         return false;
     };
     let sport = alloc_port(dev);
@@ -159,9 +153,21 @@ pub fn start_udp(
         .iter()
         .find_map(|p| p.ip.map(|_| p.mac))
         .unwrap_or(0);
-    let raw = eth::build_udp(mac, 0, src, dst, 64, dev.ip_id, sport, dport, payload);
+    let raw = eth::build_udp(
+        eth::IpSpec {
+            src_mac: mac,
+            dst_mac: 0,
+            src,
+            dst,
+            ttl: 64,
+            id: dev.ip_id,
+        },
+        sport,
+        dport,
+        payload,
+    );
     dev.ip_id = dev.ip_id.wrapping_add(1);
-    dev.emit_ip(Frame::raw_ip(src, dst, 64, raw), tick, events);
+    dev.emit_ip(Frame::raw_ip(src, dst, 64, raw), tick);
     true
 }
 
@@ -187,9 +193,9 @@ pub(super) fn on_udp(
                 } else {
                     format!("DNS {nm} → {}", ip_str(ip))
                 };
-                note(events, tick, dev, "dns", &msg);
+                note(events, tick, dev, EvKind::Syslog, &msg);
             } else {
-                note(events, tick, dev, "dns", &format!("DNS {name} — no answer"));
+                note(events, tick, dev, EvKind::Syslog, &format!("DNS {name} — no answer"));
             }
         } else {
             let text = String::from_utf8_lossy(payload);
@@ -198,7 +204,7 @@ pub(super) fn on_udp(
                 events,
                 tick,
                 dev,
-                "udp",
+                EvKind::Syslog,
                 &format!("UDP from {}:{} {}", ip_str(frame.src_ip), v.sport, preview),
             );
         }
@@ -211,7 +217,7 @@ pub(super) fn on_udp(
             events,
             tick,
             dev,
-            "udp",
+            EvKind::Syslog,
             &format!("UDP {}:{} closed", ip_str(frame.dst_ip), v.dport),
         );
     }
@@ -224,15 +230,14 @@ pub(super) fn on_unreach(dev: &mut Device, frame: &Frame, tick: u64, events: &mu
         .position(|f| f.rip == frame.src_ip && f.state != FlowState::Done)
     {
         let f = dev.flows.remove(i);
-        let kind = f.kind.event_kind();
         note(
             events,
             tick,
             dev,
-            kind,
+            EvKind::Syslog,
             &format!(
                 "{} {}:{} unreachable",
-                kind.to_ascii_uppercase(),
+                f.kind.label(),
                 ip_str(f.rip),
                 f.rport
             ),
@@ -293,35 +298,37 @@ pub(super) fn on_tcp(
             send_tcp(
                 dev,
                 frame.dst_ip,
-                v.dport,
                 frame.src_ip,
-                v.sport,
-                isn,
-                seq.wrapping_add(1),
-                TCP_SYN | TCP_ACK,
+                eth::TcpHdr {
+                    sport: v.dport,
+                    dport: v.sport,
+                    seq: isn,
+                    ack: seq.wrapping_add(1),
+                    flags: TCP_SYN | TCP_ACK,
+                },
                 &[],
                 tick,
-                events,
             );
         } else if dev.kind == DeviceKind::Host {
             send_tcp(
                 dev,
                 frame.dst_ip,
-                v.dport,
                 frame.src_ip,
-                v.sport,
-                0,
-                seq.wrapping_add(1),
-                TCP_RST | TCP_ACK,
+                eth::TcpHdr {
+                    sport: v.dport,
+                    dport: v.sport,
+                    seq: 0,
+                    ack: seq.wrapping_add(1),
+                    flags: TCP_RST | TCP_ACK,
+                },
                 &[],
                 tick,
-                events,
             );
             note(
                 events,
                 tick,
                 dev,
-                "tcp",
+                EvKind::Syslog,
                 &format!("TCP {}:{} closed", ip_str(frame.dst_ip), v.dport),
             );
         }
@@ -347,12 +354,11 @@ fn client_tcp(
     let f = dev.flows[i].clone();
     if flags & TCP_RST != 0 {
         dev.flows.remove(i);
-        let kind = f.kind.event_kind();
         note(
             events,
             tick,
             dev,
-            kind,
+            EvKind::Syslog,
             &format!("TCP {}:{} closed", ip_str(f.rip), f.rport),
         );
         return;
@@ -363,22 +369,23 @@ fn client_tcp(
             send_tcp(
                 dev,
                 f.lip,
-                f.lport,
                 f.rip,
-                f.rport,
-                next,
-                seq.wrapping_add(1),
-                TCP_ACK,
+                eth::TcpHdr {
+                    sport: f.lport,
+                    dport: f.rport,
+                    seq: next,
+                    ack: seq.wrapping_add(1),
+                    flags: TCP_ACK,
+                },
                 &[],
                 tick,
-                events,
             );
             dev.flows.remove(i);
             note(
                 events,
                 tick,
                 dev,
-                "tcp",
+                EvKind::Syslog,
                 &format!("TCP {}:{} open", ip_str(f.rip), f.rport),
             );
             return;
@@ -391,15 +398,16 @@ fn client_tcp(
         send_tcp(
             dev,
             f.lip,
-            f.lport,
             f.rip,
-            f.rport,
-            next,
-            seq.wrapping_add(1),
-            TCP_ACK | TCP_PSH,
+            eth::TcpHdr {
+                sport: f.lport,
+                dport: f.rport,
+                seq: next,
+                ack: seq.wrapping_add(1),
+                flags: TCP_ACK | TCP_PSH,
+            },
             &tx,
             tick,
-            events,
         );
         return;
     }
@@ -412,7 +420,7 @@ fn client_tcp(
                 events,
                 tick,
                 dev,
-                "http",
+                EvKind::Syslog,
                 &format!(
                     "HTTP {status} from {}:{} ({} bytes)",
                     ip_str(f.rip),
@@ -425,7 +433,7 @@ fn client_tcp(
                 events,
                 tick,
                 dev,
-                "tcp",
+                EvKind::Syslog,
                 &format!(
                     "TCP {}:{} data ({} bytes)",
                     ip_str(f.rip),
@@ -467,22 +475,23 @@ fn server_tcp(
     send_tcp(
         dev,
         f.lip,
-        f.lport,
         f.rip,
-        f.rport,
-        f.seq,
-        ack,
-        TCP_ACK | TCP_PSH | TCP_FIN,
+        eth::TcpHdr {
+            sport: f.lport,
+            dport: f.rport,
+            seq: f.seq,
+            ack,
+            flags: TCP_ACK | TCP_PSH | TCP_FIN,
+        },
         &bytes,
         tick,
-        events,
     );
     dev.flows.remove(i);
     note(
         events,
         tick,
         dev,
-        "http",
+        EvKind::Syslog,
         &format!("HTTP 200 to {}:{}", ip_str(f.rip), f.rport),
     );
 }
@@ -490,24 +499,28 @@ fn server_tcp(
 fn send_tcp(
     dev: &mut Device,
     src: [u8; 4],
-    sport: u16,
     dst: [u8; 4],
-    dport: u16,
-    seq: u32,
-    ack: u32,
-    flags: u8,
+    h: eth::TcpHdr,
     payload: &[u8],
     tick: u64,
-    events: &mut Vec<SimEvent>,
 ) {
     let mac = dev.mac_of_ip(src).unwrap_or(0);
     let raw = eth::build_tcp(
-        mac, 0, src, dst, 64, dev.ip_id, sport, dport, seq, ack, flags, payload,
+        eth::IpSpec {
+            src_mac: mac,
+            dst_mac: 0,
+            src,
+            dst,
+            ttl: 64,
+            id: dev.ip_id,
+        },
+        h,
+        payload,
     );
     dev.ip_id = dev.ip_id.wrapping_add(1);
     let mut f = Frame::raw_ip(src, dst, 64, raw);
     f.src_mac = mac;
-    dev.emit_ip(f, tick, events);
+    dev.emit_ip(f, tick);
 }
 
 fn send_unreach(dev: &mut Device, frame: &Frame, raw: &[u8], in_port: usize) {
@@ -523,12 +536,14 @@ fn send_unreach(dev: &mut Device, frame: &Frame, raw: &[u8], in_port: usize) {
     let mut body = vec![0; 4];
     body.extend_from_slice(&raw[v.off..quote_end]);
     let out = eth::build_icmp(
-        smac,
-        frame.src_mac,
-        src,
-        frame.src_ip,
-        64,
-        dev.ip_id,
+        eth::IpSpec {
+            src_mac: smac,
+            dst_mac: frame.src_mac,
+            src,
+            dst: frame.src_ip,
+            ttl: 64,
+            id: dev.ip_id,
+        },
         3,
         3,
         &body,

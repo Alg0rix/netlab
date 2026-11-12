@@ -286,7 +286,18 @@ impl NetLab {
             _ => return false,
         };
         self.topo.acl_add(
-            dev, num, permit, proto, src, src_wild, dst, dst_wild, sport, dport,
+            dev,
+            netlab_core::AceArgs {
+                num,
+                permit,
+                proto,
+                src,
+                src_wild,
+                dst,
+                dst_wild,
+                sport,
+                dport,
+            },
         )
     }
 

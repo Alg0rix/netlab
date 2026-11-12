@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::device::{Device, DeviceKind, Route, RouteProto};
 use crate::eth;
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::Frame;
 use crate::ip_str;
 use crate::net_of;
@@ -15,6 +15,7 @@ const ALLSPF: [u8; 4] = [224, 0, 0, 5];
 const OSPF_MAC: u64 = 0x0100_5e00_0005;
 const HELLO_EVERY: u64 = 10;
 const DEAD: u64 = 40;
+const OSPF_AD: u8 = 110;
 
 #[derive(Debug, Clone)]
 pub struct OspfNet {
@@ -23,13 +24,50 @@ pub struct OspfNet {
     pub area: u32,
 }
 
+/// router_id value plus provenance — explicit config beats derivation.
+#[derive(Debug, Clone, Copy)]
+pub struct OspfRouterId {
+    pub value: [u8; 4],
+    pub explicit: bool,
+}
+
+/// Neighbor FSM seat. Serde names: "O" | "FULL" | "-".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NbrState {
+    O,
+    Full,
+    Down,
+}
+
+impl NbrState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NbrState::O => "O",
+            NbrState::Full => "FULL",
+            NbrState::Down => "-",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            NbrState::O => "O",
+            NbrState::Full => "Full",
+            NbrState::Down => "Down",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Nbr {
     pub rid: [u8; 4],
     pub ip: [u8; 4],
     pub port: usize,
     pub area: u32,
-    pub last: u64,
+    pub state: NbrState,
+    pub first_hello: u64,
+    pub last_hello: u64,
+    /// tick the seat fell to Down — drives the purge sweep
+    down_tick: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +81,8 @@ pub struct Lsa {
 #[derive(Debug, Clone)]
 pub struct Ospf {
     pub on: bool,
-    pub router_id: [u8; 4],
+    pub pid: u16,
+    pub router_id: OspfRouterId,
     pub nets: Vec<OspfNet>,
     /// Per-port area from `ip ospf area`. None = not set on that port.
     pub if_area: Vec<Option<u32>>,
@@ -54,7 +93,7 @@ pub struct Ospf {
 }
 
 impl Ospf {
-    /// Clear runtime adjacency state; config (nets, areas, on) is kept.
+    /// `clear ip ospf process` — runtime state flushed, config survives.
     pub fn reset(&mut self) {
         self.nbrs.clear();
         self.lsas.clear();
@@ -66,7 +105,11 @@ impl Default for Ospf {
     fn default() -> Self {
         Self {
             on: false,
-            router_id: [0; 4],
+            pid: 0,
+            router_id: OspfRouterId {
+                value: [0; 4],
+                explicit: false,
+            },
             nets: Vec::new(),
             if_area: Vec::new(),
             nbrs: Vec::new(),
@@ -77,21 +120,153 @@ impl Default for Ospf {
     }
 }
 
-pub fn tick(dev: &mut Device, now: u64) {
+/// Derived winner: highest IPv4 among admin_up ∧ link-up ∧ addressed ports.
+pub fn derive_router_id(dev: &Device) -> OspfRouterId {
+    OspfRouterId {
+        value: dev
+            .ports
+            .iter()
+            .filter(|p| p.admin_up && p.link_up)
+            .filter_map(|p| p.ip.map(|(a, _)| a))
+            .max()
+            .unwrap_or([0; 4]),
+        explicit: false,
+    }
+}
+
+fn adjchg(
+    dev: &Device,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+    nbr: &Nbr,
+    from: NbrState,
+    to: NbrState,
+) {
+    events.push(SimEvent::new(
+        tick,
+        dev.id,
+        dev.ports.get(nbr.port).and_then(|p| p.link),
+        EvKind::Syslog,
+        format!(
+            "%OSPF-5-ADJCHG: Process {}, Nbr {} on {} from {} to {}",
+            dev.ospf.pid,
+            ip_str(nbr.rid),
+            Device::render_port_name(dev.kind, nbr.port),
+            from.word(),
+            to.word()
+        ),
+    ));
+}
+
+/// One FSM move plus its ADJCHG event (transitions only — never same-seat).
+fn transition(
+    dev: &mut Device,
+    idx: usize,
+    to: NbrState,
+    tick: u64,
+    events: &mut Vec<SimEvent>,
+) {
+    let (from, port, rid) = {
+        let n = &dev.ospf.nbrs[idx];
+        (n.state, n.port, n.rid)
+    };
+    if from == to {
+        return;
+    }
+    {
+        let n = &mut dev.ospf.nbrs[idx];
+        n.state = to;
+        if to == NbrState::Down {
+            n.down_tick = tick;
+        }
+        if to == NbrState::O {
+            n.first_hello = tick;
+            n.last_hello = tick;
+        }
+    }
+    let snap = Nbr {
+        rid,
+        ip: dev.ospf.nbrs[idx].ip,
+        port,
+        area: dev.ospf.nbrs[idx].area,
+        state: to,
+        first_hello: dev.ospf.nbrs[idx].first_hello,
+        last_hello: dev.ospf.nbrs[idx].last_hello,
+        down_tick: dev.ospf.nbrs[idx].down_tick,
+    };
+    adjchg(dev, tick, events, &snap, from, to);
+}
+
+/// link-down / admin-down on a port: every neighbor on it falls to Down.
+pub fn port_down(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimEvent>) {
+    if !dev.ospf.on {
+        return;
+    }
+    let mut moved = false;
+    for i in 0..dev.ospf.nbrs.len() {
+        if dev.ospf.nbrs[i].port == port && dev.ospf.nbrs[i].state != NbrState::Down {
+            transition(dev, i, NbrState::Down, tick, events);
+            moved = true;
+        }
+    }
+    if moved {
+        originate(dev, tick);
+    }
+}
+
+/// `no network` sweep: neighbors whose port/area lost coverage fall to Down.
+pub fn nbrs_off_networks(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent>) {
+    if !dev.ospf.on {
+        return;
+    }
+    let mut moved = false;
+    for i in 0..dev.ospf.nbrs.len() {
+        let (port, area, state) = {
+            let n = &dev.ospf.nbrs[i];
+            (n.port, n.area, n.state)
+        };
+        if state != NbrState::Down && area_of(dev, port) != Some(area) {
+            transition(dev, i, NbrState::Down, tick, events);
+            moved = true;
+        }
+    }
+    if moved {
+        originate(dev, tick);
+    }
+}
+
+pub fn tick(dev: &mut Device, now: u64, events: &mut Vec<SimEvent>) {
     if !dev.ospf.on || !dev.powered || dev.kind != DeviceKind::Router {
         return;
     }
-    ensure_rid(dev);
-    let before = dev.ospf.nbrs.len();
-    dev.ospf.nbrs.retain(|n| now.saturating_sub(n.last) <= DEAD);
-    if dev.ospf.nbrs.len() != before {
-        originate(dev);
+    let mut aged = false;
+    let mut i = 0;
+    while i < dev.ospf.nbrs.len() {
+        let (state, last, down_tick) = {
+            let n = &dev.ospf.nbrs[i];
+            (n.state, n.last_hello, n.down_tick)
+        };
+        match state {
+            NbrState::O | NbrState::Full if now.saturating_sub(last) >= DEAD => {
+                transition(dev, i, NbrState::Down, now, events);
+                aged = true;
+                i += 1;
+            }
+            NbrState::Down if now.saturating_sub(down_tick) >= DEAD => {
+                dev.ospf.nbrs.remove(i);
+            }
+            _ => i += 1,
+        }
+    }
+    if aged {
+        originate(dev, now);
     }
     if now < dev.ospf.next_hello {
         return;
     }
     dev.ospf.next_hello = now + HELLO_EVERY;
     let ports: Vec<(usize, u32, [u8; 4], [u8; 4])> = (0..dev.ports.len())
+        .filter(|i| dev.ports[*i].admin_up && dev.ports[*i].link_up)
         .filter_map(|i| {
             let area = area_of(dev, i)?;
             let (ip, mask) = dev.ports[i].ip?;
@@ -103,10 +278,15 @@ pub fn tick(dev: &mut Device, now: u64) {
             .ospf
             .nbrs
             .iter()
-            .filter(|n| n.port == port)
+            .filter(|n| n.port == port && n.state != NbrState::Down)
             .map(|n| n.rid)
             .collect();
-        send(dev, port, ip, hello(dev.ospf.router_id, area, mask, &nbrs));
+        send(
+            dev,
+            port,
+            ip,
+            hello(dev.ospf.router_id.value, area, mask, &nbrs),
+        );
     }
 }
 
@@ -124,7 +304,7 @@ pub fn ingest(
     if !is_ospf(frame) {
         return frame.dst_ip == ALLSPF;
     }
-    if !dev.ospf.on || dev.kind != DeviceKind::Router {
+    if !dev.ospf.on || dev.kind != DeviceKind::Router || !dev.powered {
         return true;
     }
     let Some(raw) = frame.raw.as_deref() else {
@@ -135,6 +315,9 @@ pub fn ingest(
     };
     let body = &raw[v.payload.min(raw.len())..];
     if body.len() < 24 || body[0] != 2 {
+        return true;
+    }
+    if !dev.ports.get(in_port).map(|p| p.admin_up && p.link_up).unwrap_or(false) {
         return true;
     }
     let Some(area) = area_of(dev, in_port) else {
@@ -151,51 +334,75 @@ pub fn ingest(
         return true;
     }
     let rid = [body[4], body[5], body[6], body[7]];
-    if rid == dev.ospf.router_id || rid == [0; 4] {
+    if rid == dev.ospf.router_id.value || rid == [0; 4] {
         return true;
     }
     match body[1] {
         1 => {
-            let new = !dev
+            // RFC 2328 §10.5: the hello's mask must equal the port's.
+            if body.len() < 28 || body[24..28] != mask {
+                return true;
+            }
+            let mut grew = false;
+            match dev
                 .ospf
                 .nbrs
                 .iter()
-                .any(|n| n.rid == rid && n.port == in_port);
-            if let Some(n) = dev
-                .ospf
-                .nbrs
-                .iter_mut()
-                .find(|n| n.rid == rid && n.port == in_port)
+                .position(|n| n.rid == rid && n.port == in_port)
             {
-                n.last = tick;
-                n.ip = frame.src_ip;
-                n.area = area;
-            } else {
-                dev.ospf.nbrs.push(Nbr {
-                    rid,
-                    ip: frame.src_ip,
-                    port: in_port,
-                    area,
-                    last: tick,
-                });
-                crate::services::note(
-                    events,
-                    tick,
-                    dev,
-                    "ospf",
-                    &format!("OSPF neighbor {} up on {}", ip_str(frame.src_ip), in_port),
-                );
+                Some(i) => {
+                    let state = dev.ospf.nbrs[i].state;
+                    match state {
+                        NbrState::Down => {
+                            transition(dev, i, NbrState::O, tick, events);
+                            grew = true;
+                        }
+                        NbrState::O => {
+                            dev.ospf.nbrs[i].last_hello = tick;
+                            dev.ospf.nbrs[i].ip = frame.src_ip;
+                            dev.ospf.nbrs[i].area = area;
+                            if tick.saturating_sub(dev.ospf.nbrs[i].first_hello) >= HELLO_EVERY {
+                                transition(dev, i, NbrState::Full, tick, events);
+                            }
+                        }
+                        NbrState::Full => {
+                            dev.ospf.nbrs[i].last_hello = tick;
+                            dev.ospf.nbrs[i].ip = frame.src_ip;
+                            dev.ospf.nbrs[i].area = area;
+                        }
+                    }
+                }
+                None => {
+                    dev.ospf.nbrs.push(Nbr {
+                        rid,
+                        ip: frame.src_ip,
+                        port: in_port,
+                        area,
+                        state: NbrState::O,
+                        first_hello: tick,
+                        last_hello: tick,
+                        down_tick: 0,
+                    });
+                    let n = dev.ospf.nbrs.last().unwrap().clone();
+                    adjchg(dev, tick, events, &n, NbrState::Down, NbrState::O);
+                    grew = true;
+                }
             }
-            if new {
-                originate(dev);
+            if grew {
+                originate(dev, tick);
             }
         }
         4 => {
             if parse_lsu(dev, &body[24..]) {
-                install(dev);
+                install(dev, tick);
                 let payload = body.to_vec();
                 let ports: Vec<(usize, [u8; 4])> = (0..dev.ports.len())
-                    .filter(|p| *p != in_port && area_of(dev, *p).is_some())
+                    .filter(|p| {
+                        *p != in_port
+                            && area_of(dev, *p).is_some()
+                            && dev.ports[*p].admin_up
+                            && dev.ports[*p].link_up
+                    })
                     .filter_map(|p| dev.ports[p].ip.map(|(a, _)| (p, a)))
                     .collect();
                 for (p, ip) in ports {
@@ -229,21 +436,8 @@ pub fn area_of(dev: &Device, port: usize) -> Option<u32> {
         .map(|n| n.area)
 }
 
-fn ensure_rid(dev: &mut Device) {
-    if dev.ospf.router_id != [0; 4] {
-        return;
-    }
-    dev.ospf.router_id = dev
-        .ports
-        .iter()
-        .filter_map(|p| p.ip.map(|(a, _)| a))
-        .max()
-        .unwrap_or([0; 4]);
-}
-
-fn originate(dev: &mut Device) {
-    ensure_rid(dev);
-    let rid = dev.ospf.router_id;
+fn originate(dev: &mut Device, tick: u64) {
+    let rid = dev.ospf.router_id.value;
     if rid == [0; 4] {
         return;
     }
@@ -251,9 +445,16 @@ fn originate(dev: &mut Device) {
     let stubs: Vec<([u8; 4], [u8; 4])> = dev
         .ports
         .iter()
+        .filter(|p| p.admin_up && p.link_up)
         .filter_map(|p| p.ip.map(|(a, m)| (net_of(a, m), m)))
         .collect();
-    let links: Vec<[u8; 4]> = dev.ospf.nbrs.iter().map(|n| n.rid).collect();
+    let links: Vec<[u8; 4]> = dev
+        .ospf
+        .nbrs
+        .iter()
+        .filter(|n| n.state != NbrState::Down)
+        .map(|n| n.rid)
+        .collect();
     dev.ospf.lsas.retain(|l| l.rid != rid);
     dev.ospf.lsas.push(Lsa {
         rid,
@@ -261,9 +462,10 @@ fn originate(dev: &mut Device) {
         stubs: stubs.clone(),
         links: links.clone(),
     });
-    install(dev);
+    install(dev, tick);
     let pkt = lsu(rid, dev.ospf.seq, &stubs, &links);
     let ports: Vec<(usize, [u8; 4], u32)> = (0..dev.ports.len())
+        .filter(|i| dev.ports[*i].admin_up && dev.ports[*i].link_up)
         .filter_map(|i| {
             let area = area_of(dev, i)?;
             let (ip, _) = dev.ports[i].ip?;
@@ -277,13 +479,16 @@ fn originate(dev: &mut Device) {
     }
 }
 
-fn install(dev: &mut Device) {
+fn install(dev: &mut Device, tick: u64) {
     dev.routes.retain(|r| r.proto != RouteProto::Ospf);
-    let me = dev.ospf.router_id;
+    let me = dev.ospf.router_id.value;
     let mut dist: HashMap<[u8; 4], u32> = HashMap::new();
     let mut hop: HashMap<[u8; 4], (usize, [u8; 4])> = HashMap::new();
     dist.insert(me, 0);
     for n in &dev.ospf.nbrs {
+        if n.state == NbrState::Down {
+            continue;
+        }
         dist.insert(n.rid, 1);
         hop.insert(n.rid, (n.port, n.ip));
     }
@@ -325,6 +530,7 @@ fn install(dev: &mut Device) {
         if port >= dev.ports.len() {
             continue;
         }
+        let metric = dist.get(&lsa.rid).copied().unwrap_or(0);
         for &(prefix, mask) in &lsa.stubs {
             dev.routes.push(Route {
                 prefix,
@@ -333,6 +539,9 @@ fn install(dev: &mut Device) {
                 out_port: port,
                 connected: false,
                 proto: RouteProto::Ospf,
+                ad: OSPF_AD,
+                metric,
+                learned_tick: tick,
             });
         }
     }
@@ -390,7 +599,7 @@ fn parse_lsu(dev: &mut Device, body: &[u8]) -> bool {
     }
     let rid = [body[4], body[5], body[6], body[7]];
     let seq = u32::from_be_bytes(body[8..12].try_into().unwrap());
-    if rid == dev.ospf.router_id {
+    if rid == dev.ospf.router_id.value {
         return false;
     }
     if dev.ospf.lsas.iter().any(|l| l.rid == rid && l.seq >= seq) {
@@ -429,7 +638,18 @@ fn parse_lsu(dev: &mut Device, body: &[u8]) -> bool {
 
 fn send(dev: &mut Device, port: usize, src: [u8; 4], payload: Vec<u8>) {
     let mac = dev.ports[port].mac;
-    let raw = eth::build_ip(mac, OSPF_MAC, src, ALLSPF, 1, 89, dev.ip_id, &payload);
+    let raw = eth::build_ip(
+        eth::IpSpec {
+            src_mac: mac,
+            dst_mac: OSPF_MAC,
+            src,
+            dst: ALLSPF,
+            ttl: 1,
+            id: dev.ip_id,
+        },
+        89,
+        &payload,
+    );
     dev.ip_id = dev.ip_id.wrapping_add(1);
     let mut f = Frame::raw_ip(src, ALLSPF, 1, raw);
     f.src_mac = mac;

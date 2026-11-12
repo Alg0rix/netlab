@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::{Frame, Payload, BROADCAST_MAC};
 use crate::services::{local_l4, nat_egress, nat_ingress};
-use crate::{ip_str, mac_str, mask_bits, net_of, LinkId};
+use crate::{ip_str, mask_bits, net_of, LinkId};
 
 pub type DeviceId = u32;
 
@@ -25,6 +25,39 @@ pub enum NatRole {
     Outside,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpMethod {
+    None,
+    Manual,
+    Dhcp,
+}
+
+impl IpMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IpMethod::None => "none",
+            IpMethod::Manual => "manual",
+            IpMethod::Dhcp => "dhcp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryType {
+    Static,
+    Dynamic,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PortStats {
+    pub rx: u64,
+    pub tx: u64,
+    pub rx_err: u64,
+    pub tx_err: u64,
+    pub drops: u64,
+    pub cleared_tick: u64,
+}
+
 #[derive(Debug)]
 pub struct Port {
     pub link: Option<LinkId>,
@@ -42,10 +75,16 @@ pub struct Port {
     pub out_acl: Option<u16>,
     /// DHCP relay target. Limited broadcasts are not routed unless this is set.
     pub helper: Option<[u8; 4]>,
+    pub admin_up: bool,
+    pub description: Option<String>,
+    pub method: IpMethod,
+    /// Carrier state driven by topology link ops.
+    pub link_up: bool,
+    pub stats: PortStats,
 }
 
 /// One extended ACL entry. `proto` 0 matches any. Wildcards are Cisco-style.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ace {
     pub permit: bool,
     pub proto: u8,
@@ -65,6 +104,7 @@ pub struct Acl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RouteProto {
+    Connected,
     Static,
     Ospf,
 }
@@ -79,6 +119,60 @@ pub struct Route {
     pub connected: bool,
     /// Static beats OSPF at equal prefix length; connected always wins.
     pub proto: RouteProto,
+    pub ad: u8,
+    pub metric: u32,
+    pub learned_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MacEntry {
+    pub port: usize,
+    pub created_tick: u64,
+    pub etype: EntryType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArpEntry {
+    pub mac: u64,
+    pub port: usize,
+    pub created_tick: u64,
+    pub etype: EntryType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlanState {
+    Active,
+    Suspend,
+}
+
+#[derive(Debug, Clone)]
+pub struct Vlan {
+    pub name: String,
+    pub state: VlanState,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Toggles {
+    pub domain_lookup: bool,
+    /// Constructor capability — immutable post-construction.
+    pub routing_enabled: bool,
+    pub proxy_arp: bool,
+    pub directed_broadcast: bool,
+    /// Live forwarding toggle `no ip routing` flips.
+    pub ip_routing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DhcpExcluded {
+    pub lo: [u8; 4],
+    pub hi: Option<[u8; 4]>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LeaseEntry {
+    pub ip: [u8; 4],
+    pub granted_tick: u64,
+    pub expires_tick: Option<u64>,
 }
 
 /// Frame held back while ARP resolves `resolve`.
@@ -88,6 +182,42 @@ pub struct Pending {
     pub out_port: usize,
     pub resolve: [u8; 4],
 }
+
+/// Core-side ping/traceroute probe state — drives the C3–C8 wording
+/// through the shared event queue.
+#[derive(Debug)]
+pub enum Probe {
+    Ping(PingProbe),
+    Trace(TraceProbe),
+}
+
+#[derive(Debug)]
+pub struct PingProbe {
+    pub dst: [u8; 4],
+    pub sent: u8,
+    pub ok: u8,
+    pub rtts: Vec<u64>,
+    /// (launch tick, icmp seq) of the outstanding probe
+    pub waiting: Option<(u64, u16)>,
+    /// next launch tick
+    pub next: u64,
+}
+
+#[derive(Debug)]
+pub struct TraceProbe {
+    pub dst: [u8; 4],
+    pub hop: u8,
+    /// (launch tick, icmp seq) of the outstanding probe
+    pub waiting: Option<(u64, u16)>,
+    pub next: u64,
+    pub done: bool,
+}
+
+pub const PING_PROBES: u8 = 5;
+/// Probe wait budget — sized so multi-hop paths (link delay × hops) still
+/// fit; the C4 header text always says "2 seconds".
+pub const PROBE_TIMEOUT: u64 = 40;
+pub const TRACE_MAX_HOPS: u8 = 30;
 
 impl Port {
     /// VLAN an untagged access frame belongs to (never 0).
@@ -110,10 +240,10 @@ pub struct Device {
     pub y: f64,
     pub ports: Vec<Port>,
     /// switch: (mac, vlan) -> port index
-    pub mac_table: HashMap<(u64, u16), usize>,
+    pub mac_table: HashMap<(u64, u16), MacEntry>,
     pub acls: Vec<Acl>,
     pub ospf: crate::ospf::Ospf,
-    pub arp_cache: HashMap<[u8; 4], u64>,
+    pub arp_cache: HashMap<[u8; 4], ArpEntry>,
     pub routes: Vec<Route>,
     pub pending: Vec<Pending>,
     /// frames to push onto the wire at the end of the tick
@@ -132,12 +262,24 @@ pub struct Device {
     pub dns_records: Vec<(String, [u8; 4])>,
     /// optional DHCP pool (start, end); otherwise derived from the server address
     pub pool: Option<([u8; 4], [u8; 4])>,
-    pub leases: HashMap<u64, [u8; 4]>,
+    pub leases: HashMap<u64, LeaseEntry>,
     pub dhcp: Option<crate::services::DhcpClient>,
     pub flows: Vec<crate::services::Flow>,
     pub nat: Vec<crate::services::NatEnt>,
     /// 1:1 maps (proto 0) and static port forwards (tcp/udp).
     pub static_nat: Vec<crate::services::StaticNat>,
+    /// switch: vlan id -> configured row; seeded {1,1002-1005} at construction
+    pub vlans: HashMap<u16, Vlan>,
+    pub toggles: Toggles,
+    pub dhcp_excluded: Vec<DhcpExcluded>,
+    /// buffered syslog lines (`show logging buffered`)
+    pub log: std::collections::VecDeque<String>,
+    /// in-flight ping/trace job, `Topology::ping`/`trace` arm it
+    pub probe: Option<Probe>,
+    /// monotonic icmp seq for probe echoes — a reply is honored only while
+    /// the exact seq is outstanding, so late replies from a previous block
+    /// cannot leak into a new one
+    pub probe_seq: u16,
 }
 
 impl Device {
@@ -149,6 +291,48 @@ impl Device {
         y: f64,
         macs: Vec<u64>,
     ) -> Self {
+        let admin_up = kind != DeviceKind::Router;
+        let toggles = match kind {
+            DeviceKind::Router => Toggles {
+                domain_lookup: true,
+                routing_enabled: true,
+                proxy_arp: true,
+                directed_broadcast: false,
+                ip_routing: true,
+            },
+            DeviceKind::Switch => Toggles {
+                domain_lookup: true,
+                routing_enabled: true,
+                proxy_arp: true,
+                directed_broadcast: false,
+                ip_routing: false,
+            },
+            _ => Toggles {
+                domain_lookup: true,
+                routing_enabled: false,
+                proxy_arp: false,
+                directed_broadcast: false,
+                ip_routing: false,
+            },
+        };
+        let mut vlans = HashMap::new();
+        if kind == DeviceKind::Switch {
+            for (id, name) in [
+                (1u16, "default"),
+                (1002, "fddi-default"),
+                (1003, "token-ring"),
+                (1004, "fddinet"),
+                (1005, "trnet"),
+            ] {
+                vlans.insert(
+                    id,
+                    Vlan {
+                        name: name.to_string(),
+                        state: VlanState::Active,
+                    },
+                );
+            }
+        }
         Self {
             id,
             name,
@@ -169,6 +353,11 @@ impl Device {
                     in_acl: None,
                     out_acl: None,
                     helper: None,
+                    admin_up,
+                    description: None,
+                    method: IpMethod::None,
+                    link_up: false,
+                    stats: PortStats::default(),
                 })
                 .collect(),
             mac_table: HashMap::new(),
@@ -193,6 +382,12 @@ impl Device {
             static_nat: Vec::new(),
             acls: Vec::new(),
             ospf: crate::ospf::Ospf::default(),
+            vlans,
+            toggles,
+            dhcp_excluded: Vec::new(),
+            log: std::collections::VecDeque::new(),
+            probe: None,
+            probe_seq: 0,
         }
     }
 
@@ -217,7 +412,7 @@ impl Device {
     }
 
     /// Replace the default route with one via `gw` out `out_port`.
-    pub(crate) fn set_default_route(&mut self, gw: [u8; 4], out_port: usize) {
+    pub(crate) fn set_default_route(&mut self, gw: [u8; 4], out_port: usize, tick: u64) {
         self.routes.retain(|r| r.prefix != [0, 0, 0, 0]);
         self.routes.push(Route {
             prefix: [0, 0, 0, 0],
@@ -226,7 +421,86 @@ impl Device {
             out_port,
             connected: false,
             proto: RouteProto::Static,
+            ad: 1,
+            metric: 0,
+            learned_tick: tick,
         });
+    }
+
+    /// Canonical netlab port name for this kind (IfMap key + name authority).
+    pub fn canonical_port_name(kind: DeviceKind, port: usize) -> String {
+        match kind {
+            DeviceKind::Router => format!("g0/{port}"),
+            DeviceKind::Switch => format!("fa0/{}", port + 1),
+            DeviceKind::Host => format!("eth{port}"),
+            DeviceKind::Ext => format!("e{port}"),
+        }
+    }
+
+    /// IOS display name used by renderers and link/syslog wording.
+    pub fn render_port_name(kind: DeviceKind, port: usize) -> String {
+        match kind {
+            DeviceKind::Router => format!("GigabitEthernet0/{port}"),
+            DeviceKind::Switch => format!("FastEthernet0/{}", port + 1),
+            DeviceKind::Host => format!("eth{port}"),
+            DeviceKind::Ext => format!("Ethernet{port}"),
+        }
+    }
+
+    pub fn port_names(&self) -> Vec<String> {
+        (0..self.ports.len())
+            .map(|i| Self::canonical_port_name(self.kind, i))
+            .collect()
+    }
+
+    /// True while the vlan row exists and is `active`; hosts carry no map.
+    pub fn vlan_active(&self, vid: u16) -> bool {
+        if self.kind != DeviceKind::Switch {
+            return true;
+        }
+        self.vlans
+            .get(&vid)
+            .map(|v| v.state == VlanState::Active)
+            .unwrap_or(false)
+    }
+
+    /// Re-derive connected routes from `admin_up && link_up && addressed` ports.
+    /// An unchanged tuple keeps its `learned_tick`; a (re)appearing row stamps `tick`.
+    pub fn sync_connected(&mut self, tick: u64) {
+        let keep: Vec<Route> = self
+            .routes
+            .iter()
+            .filter(|r| r.proto != RouteProto::Connected)
+            .cloned()
+            .collect();
+        let mut next = keep;
+        for (i, p) in self.ports.iter().enumerate() {
+            let Some((addr, mask)) = p.ip else { continue };
+            if !p.admin_up || !p.link_up {
+                continue;
+            }
+            let prefix = net_of(addr, mask);
+            let learned_tick = self
+                .routes
+                .iter()
+                .find(|r| {
+                    r.proto == RouteProto::Connected && r.prefix == prefix && r.mask == mask
+                })
+                .map(|r| r.learned_tick)
+                .unwrap_or(tick);
+            next.push(Route {
+                prefix,
+                mask,
+                next_hop: addr,
+                out_port: i,
+                connected: true,
+                proto: RouteProto::Connected,
+                ad: 0,
+                metric: 0,
+                learned_tick,
+            });
+        }
+        self.routes = next;
     }
 
     /// Power off: drop all runtime state. Config (routes, IPs, NAT rules,
@@ -241,6 +515,7 @@ impl Device {
         self.flows.clear();
         self.nat.clear();
         self.ospf.reset();
+        self.probe = None;
         if self
             .dhcp
             .as_ref()
@@ -255,7 +530,7 @@ impl Device {
         self.powered = true;
     }
 
-    /// Longest prefix, then connected, then static (proto 0) over OSPF (proto 1).
+    /// Longest prefix, then connected, then static over OSPF.
     pub(crate) fn lookup(&self, dst: [u8; 4]) -> Option<Route> {
         let mut best: Option<Route> = None;
         let take = |cand: &Route, best: &Route| {
@@ -268,23 +543,6 @@ impl Device {
             }
             cand.proto <= best.proto
         };
-        for (i, p) in self.ports.iter().enumerate() {
-            if let Some((addr, mask)) = p.ip {
-                if net_of(dst, mask) == net_of(addr, mask) {
-                    let r = Route {
-                        prefix: net_of(addr, mask),
-                        mask,
-                        next_hop: dst,
-                        out_port: i,
-                        connected: true,
-                        proto: RouteProto::Static,
-                    };
-                    if best.as_ref().map(|b| take(&r, b)).unwrap_or(true) {
-                        best = Some(r);
-                    }
-                }
-            }
-        }
         for r in &self.routes {
             if net_of(dst, r.mask) == net_of(r.prefix, r.mask)
                 && best.as_ref().map(|b| take(r, b)).unwrap_or(true)
@@ -296,16 +554,10 @@ impl Device {
     }
 
     /// Send an IP frame toward `dst_ip`; ARP-resolves the next hop or queues it.
-    pub fn emit_ip(&mut self, mut frame: Frame, tick: u64, events: &mut Vec<SimEvent>) {
+    /// Returns false when no route exists or an ACL denies the frame.
+    pub fn emit_ip(&mut self, mut frame: Frame, _tick: u64) -> bool {
         let Some(route) = self.lookup(frame.dst_ip) else {
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                None,
-                "drop",
-                format!("{}: no route to {}", self.name, ip_str(frame.dst_ip)),
-            ));
-            return;
+            return false;
         };
         let next_hop = if route.connected {
             frame.dst_ip
@@ -313,14 +565,7 @@ impl Device {
             route.next_hop
         };
         if !ip_allowed(self, self.ports[route.out_port].out_acl, &frame) {
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                self.ports[route.out_port].link,
-                "drop",
-                format!("{}: ACL denied {}", self.name, frame.label()),
-            ));
-            return;
+            return false;
         }
         let port = &self.ports[route.out_port];
         frame.src_mac = port.mac;
@@ -329,15 +574,8 @@ impl Device {
                 frame.src_ip = addr;
             }
         }
-        if let Some(&mac) = self.arp_cache.get(&next_hop) {
+        if let Some(mac) = self.arp_cache.get(&next_hop).map(|e| e.mac) {
             frame.dst_mac = mac;
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                port.link,
-                "tx",
-                format!("{}: {} via {}", self.name, frame.label(), mac_str(mac)),
-            ));
             self.outbox.push((route.out_port, frame));
         } else {
             let mut arp = Frame::ip(
@@ -350,13 +588,6 @@ impl Device {
             );
             arp.src_mac = port.mac;
             arp.dst_mac = BROADCAST_MAC;
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                port.link,
-                "arp_req",
-                format!("{}: ARP who-has {}", self.name, ip_str(next_hop)),
-            ));
             self.pending.push(Pending {
                 frame,
                 out_port: route.out_port,
@@ -364,22 +595,23 @@ impl Device {
             });
             self.outbox.push((route.out_port, arp));
         }
+        true
     }
 
     /// A frame arrived on `in_port`.
     pub fn receive(&mut self, frame: Frame, in_port: usize, tick: u64, events: &mut Vec<SimEvent>) {
+        if let Some(p) = self.ports.get_mut(in_port) {
+            if !p.admin_up || !p.link_up {
+                p.stats.drops += 1;
+                return;
+            }
+            p.stats.rx += 1;
+        }
         match self.kind {
-            DeviceKind::Switch => self.switch_receive(frame, in_port, tick, events),
+            DeviceKind::Switch => self.switch_receive(frame, in_port, tick),
             DeviceKind::Ext => {
                 // encode to wire bytes and hand to the JS bridge
                 if let Some(bytes) = crate::eth::encode(&frame) {
-                    events.push(SimEvent::new(
-                        tick,
-                        Some(self.id),
-                        self.ports[in_port].link,
-                        "ext_tx",
-                        format!("{}: -> eth[{}] {} bytes", self.name, in_port, bytes.len()),
-                    ));
                     self.ext_out.push((in_port, bytes));
                 }
             }
@@ -389,79 +621,42 @@ impl Device {
 
     /// ext only: real wire bytes arrived from the emulated node — decode and
     /// push onto the link on `port`.
-    pub fn ext_inject(&mut self, port: usize, bytes: &[u8], tick: u64, events: &mut Vec<SimEvent>) {
+    pub fn ext_inject(&mut self, port: usize, bytes: &[u8]) {
         if !self.powered || self.kind != DeviceKind::Ext || port >= self.ports.len() {
             return;
         }
         if let Some(frame) = crate::eth::decode(bytes) {
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                self.ports[port].link,
-                "ext_rx",
-                format!("{}: eth[{}] <- {}", self.name, port, frame.label()),
-            ));
             self.outbox.push((port, frame));
         }
     }
 
-    fn switch_receive(
-        &mut self,
-        mut frame: Frame,
-        in_port: usize,
-        tick: u64,
-        events: &mut Vec<SimEvent>,
-    ) {
+    fn switch_receive(&mut self, mut frame: Frame, in_port: usize, tick: u64) {
         let Some(vid) = self.ingress_vlan(in_port, frame.vlan) else {
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                self.ports.get(in_port).and_then(|p| p.link),
-                "drop",
-                format!(
-                    "{}: VLAN {} not allowed on port {}",
-                    self.name, frame.vlan, in_port
-                ),
-            ));
             return;
         };
         frame.vlan = vid;
         let src_is_mcast = ((frame.src_mac >> 40) & 1) == 1 || frame.src_mac == 0;
         let key = (frame.src_mac, vid);
-        if !src_is_mcast && self.mac_table.get(&key) != Some(&in_port) {
-            self.mac_table.insert(key, in_port);
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                None,
-                "learn",
-                format!(
-                    "{}: learned {} vlan {} on port {}",
-                    self.name,
-                    mac_str(frame.src_mac),
-                    vid,
-                    in_port
-                ),
-            ));
+        if !src_is_mcast {
+            match self.mac_table.get_mut(&key) {
+                Some(e) if e.port == in_port => e.created_tick = tick,
+                _ => {
+                    self.mac_table.insert(
+                        key,
+                        MacEntry {
+                            port: in_port,
+                            created_tick: tick,
+                            etype: EntryType::Dynamic,
+                        },
+                    );
+                }
+            }
         }
         let dst_is_mcast = ((frame.dst_mac >> 40) & 1) == 1 || frame.dst_mac == BROADCAST_MAC;
-        let learned = self.mac_table.get(&(frame.dst_mac, vid)).copied();
+        let learned = self.mac_table.get(&(frame.dst_mac, vid)).map(|e| e.port);
         match learned {
             Some(out) if !dst_is_mcast && out == in_port => {}
             Some(out) if !dst_is_mcast && out != in_port && self.port_carries(out, vid) => {
-                events.push(SimEvent::new(
-                    tick,
-                    Some(self.id),
-                    self.ports[out].link,
-                    "forward",
-                    format!(
-                        "{}: {} vlan {} -> port {}",
-                        self.name,
-                        frame.label(),
-                        vid,
-                        out
-                    ),
-                ));
                 self.queue_sw(out, frame, vid);
             }
             _ => {
@@ -474,23 +669,9 @@ impl Device {
                     })
                     .map(|(i, _)| i)
                     .collect();
-                let n = ports.len();
                 for i in ports {
                     self.queue_sw(i, frame.clone(), vid);
                 }
-                events.push(SimEvent::new(
-                    tick,
-                    Some(self.id),
-                    None,
-                    "flood",
-                    format!(
-                        "{}: flooded {} vlan {} to {} ports",
-                        self.name,
-                        frame.label(),
-                        vid,
-                        n
-                    ),
-                ));
             }
         }
     }
@@ -527,9 +708,7 @@ impl Device {
             .ports
             .get(port)
             .map(|p| {
-                if !p.trunk {
-                    0
-                } else if vid == p.native_vid() {
+                if !p.trunk || vid == p.native_vid() {
                     0
                 } else {
                     vid
@@ -548,7 +727,7 @@ impl Device {
         events: &mut Vec<SimEvent>,
     ) {
         let port_mac = self.ports[in_port].mac;
-        let ip_mcast = (frame.dst_mac >> 24) == 0x0100_5e;
+        let ip_mcast = (frame.dst_mac >> 24) == 0x0001_005e;
         if frame.dst_mac != port_mac
             && frame.dst_mac != BROADCAST_MAC
             && !(self.kind == DeviceKind::Router && ip_mcast)
@@ -563,76 +742,45 @@ impl Device {
                 | Payload::Raw { ethertype: 0x0800 }
         ) && !ip_allowed(self, self.ports[in_port].in_acl, &frame)
         {
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                self.ports[in_port].link,
-                "drop",
-                format!("{}: ACL denied {}", self.name, frame.label()),
-            ));
             return;
         }
         // opportunistic ARP learning
         if frame.src_ip != [0, 0, 0, 0] {
-            self.arp_cache.insert(frame.src_ip, frame.src_mac);
-            self.flush_pending(frame.src_ip, frame.src_mac, tick, events);
+            self.arp_cache.insert(
+                frame.src_ip,
+                ArpEntry {
+                    mac: frame.src_mac,
+                    port: in_port,
+                    created_tick: tick,
+                    etype: EntryType::Dynamic,
+                },
+            );
+            self.flush_pending(frame.src_ip, frame.src_mac);
         }
 
         match frame.payload {
             Payload::ArpRequest { target_ip } => {
-                if self.owns_ip(target_ip) {
+                if self.owns_ip(target_ip) || crate::services::nat_global(self, target_ip) {
                     let mut reply =
                         Frame::ip(target_ip, frame.src_ip, 1, Payload::ArpReply { target_ip });
                     reply.src_mac = port_mac;
                     reply.dst_mac = frame.src_mac;
-                    events.push(SimEvent::new(
-                        tick,
-                        Some(self.id),
-                        self.ports[in_port].link,
-                        "arp_rep",
-                        format!(
-                            "{}: {} is-at {}",
-                            self.name,
-                            ip_str(target_ip),
-                            mac_str(port_mac)
-                        ),
-                    ));
                     self.outbox.push((in_port, reply));
                 }
             }
-            Payload::ArpReply { .. } => {
-                events.push(SimEvent::new(
-                    tick,
-                    Some(self.id),
-                    None,
-                    "learn",
-                    format!(
-                        "{}: ARP {} is-at {}",
-                        self.name,
-                        ip_str(frame.src_ip),
-                        mac_str(frame.src_mac)
-                    ),
-                ));
-            }
+            Payload::ArpReply { .. } => {}
             Payload::IcmpEchoRequest => {
                 if nat_ingress(self, &mut frame, in_port) {
-                    self.forward(frame, Some(in_port), tick, events);
+                    self.forward(frame, Some(in_port), tick);
                 } else if self.owns_ip(frame.dst_ip) {
                     let mut reply =
                         Frame::ip(frame.dst_ip, frame.src_ip, 64, Payload::IcmpEchoReply);
                     reply.src_mac = port_mac;
                     reply.dst_mac = frame.src_mac;
                     reply.icmp_echo = frame.icmp_echo.clone();
-                    events.push(SimEvent::new(
-                        tick,
-                        Some(self.id),
-                        self.ports[in_port].link,
-                        "echo_rep",
-                        format!("{}: reply to {}", self.name, ip_str(frame.src_ip)),
-                    ));
                     self.outbox.push((in_port, reply));
                 } else {
-                    self.forward_if_router(frame, in_port, tick, events);
+                    self.forward_if_router(frame, in_port, tick);
                 }
             }
             Payload::Raw { ethertype: 0x0800 } => {
@@ -641,113 +789,324 @@ impl Device {
                 } else if is_mcast_ip(frame.dst_ip) {
                     // multicast stays on the link
                 } else if nat_ingress(self, &mut frame, in_port) {
-                    self.forward(frame, Some(in_port), tick, events);
+                    self.forward(frame, Some(in_port), tick);
                 } else if local_l4(self, &frame, in_port, tick, events) {
                     // answered or consumed (DHCP, DNS, TCP, UDP)
                 } else {
-                    self.forward_if_router(frame, in_port, tick, events);
+                    self.forward_if_router(frame, in_port, tick);
                 }
             }
             Payload::Raw { .. } => {}
             Payload::IcmpTimeExceeded => {
                 if nat_ingress(self, &mut frame, in_port) {
-                    self.forward(frame, Some(in_port), tick, events);
+                    self.forward(frame, Some(in_port), tick);
                 } else if self.owns_ip(frame.dst_ip) {
-                    events.push(SimEvent::new(
-                        tick,
-                        Some(self.id),
-                        None,
-                        "exceed",
-                        format!("{}: time exceeded from {}", self.name, ip_str(frame.src_ip)),
-                    ));
+                    self.probe_hop(&frame, tick, events);
                 } else {
-                    self.forward_if_router(frame, in_port, tick, events);
+                    self.forward_if_router(frame, in_port, tick);
                 }
             }
             Payload::IcmpEchoReply => {
                 if nat_ingress(self, &mut frame, in_port) {
-                    self.forward(frame, Some(in_port), tick, events);
+                    self.forward(frame, Some(in_port), tick);
                 } else if self.owns_ip(frame.dst_ip) {
-                    events.push(SimEvent::new(
-                        tick,
-                        Some(self.id),
-                        None,
-                        "deliver",
-                        format!(
-                            "{}: reply from {} ttl={}",
-                            self.name,
-                            ip_str(frame.src_ip),
-                            frame.ttl
-                        ),
-                    ));
+                    self.probe_reply(&frame, tick, events);
                 } else {
-                    self.forward_if_router(frame, in_port, tick, events);
+                    self.forward_if_router(frame, in_port, tick);
                 }
             }
         }
     }
 
     /// Routers forward non-multicast frames they didn't answer.
-    fn forward_if_router(
-        &mut self,
-        frame: Frame,
-        in_port: usize,
-        tick: u64,
-        events: &mut Vec<SimEvent>,
-    ) {
-        if self.kind == DeviceKind::Router && !is_mcast_ip(frame.dst_ip) {
-            self.forward(frame, Some(in_port), tick, events);
+    /// Transit forwarding runs only while `ip routing` is set.
+    fn forward_if_router(&mut self, frame: Frame, in_port: usize, tick: u64) {
+        if self.kind == DeviceKind::Router && self.toggles.ip_routing && !is_mcast_ip(frame.dst_ip)
+        {
+            self.forward(frame, Some(in_port), tick);
         }
     }
 
-    fn forward(
-        &mut self,
-        mut frame: Frame,
-        in_port: Option<usize>,
-        tick: u64,
-        events: &mut Vec<SimEvent>,
-    ) {
+    fn forward(&mut self, mut frame: Frame, in_port: Option<usize>, tick: u64) {
         frame.ttl = frame.ttl.saturating_sub(1);
         if frame.ttl == 0 {
             if let Some(port) = in_port {
                 if let Some((src, _)) = self.ports.get(port).and_then(|p| p.ip) {
-                    let exceeded = Frame::ip(src, frame.src_ip, 64, Payload::IcmpTimeExceeded);
-                    self.emit_ip(exceeded, tick, events);
+                    let mut exceeded =
+                        Frame::ip(src, frame.src_ip, 64, Payload::IcmpTimeExceeded);
+                    exceeded.icmp_echo = frame.icmp_echo.clone();
+                    self.emit_ip(exceeded, tick);
                 }
             }
-            events.push(SimEvent::new(
-                tick,
-                Some(self.id),
-                None,
-                "drop",
-                format!("{}: TTL expired for {}", self.name, frame.label()),
-            ));
             return;
         }
-        nat_egress(self, &mut frame, in_port);
+        nat_egress(self, &mut frame, in_port, tick);
         if let Some(raw) = frame.raw.as_mut() {
             crate::eth::sync_ipv4(raw, frame.src_ip, frame.dst_ip, frame.ttl, None, None, None);
         }
-        self.emit_ip(frame, tick, events);
+        self.emit_ip(frame, tick);
     }
 
-    fn flush_pending(&mut self, ip: [u8; 4], mac: u64, tick: u64, events: &mut Vec<SimEvent>) {
+    fn flush_pending(&mut self, ip: [u8; 4], mac: u64) {
         let mut i = 0;
         while i < self.pending.len() {
             if self.pending[i].resolve == ip {
                 let p = self.pending.remove(i);
                 let mut f = p.frame;
                 f.dst_mac = mac;
-                events.push(SimEvent::new(
-                    tick,
-                    Some(self.id),
-                    self.ports[p.out_port].link,
-                    "tx",
-                    format!("{}: {} (ARP resolved)", self.name, f.label()),
-                ));
                 self.outbox.push((p.out_port, f));
             } else {
                 i += 1;
+            }
+        }
+    }
+
+    /// Arm a five-probe ping block (C4 header now, glyphs and C5 via poll).
+    pub fn probe_ping(&mut self, dst: [u8; 4], tick: u64, events: &mut Vec<SimEvent>) {
+        let note = |events: &mut Vec<SimEvent>, msg: String| {
+            events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, msg));
+        };
+        note(
+            events,
+            format!(
+                "Sending {PING_PROBES}, 100-byte ICMP Echos to {}, timeout is 2 seconds:",
+                ip_str(dst)
+            ),
+        );
+        note(events, "Type escape sequence to abort.".to_string());
+        self.probe = Some(Probe::Ping(PingProbe {
+            dst,
+            sent: 0,
+            ok: 0,
+            rtts: Vec::new(),
+            waiting: None,
+            next: tick,
+        }));
+    }
+
+    /// Arm a traceroute job (C6 header now, C7/C8 rows via poll).
+    pub fn probe_trace(&mut self, dst: [u8; 4], tick: u64, events: &mut Vec<SimEvent>) {
+        events.push(SimEvent::new(
+            tick,
+            self.id,
+            None,
+            EvKind::Trace,
+            format!("Tracing the route to {}", ip_str(dst)),
+        ));
+        self.probe = Some(Probe::Trace(TraceProbe {
+            dst,
+            hop: 1,
+            waiting: None,
+            next: tick,
+            done: false,
+        }));
+    }
+
+    /// An echo reply reached this device — resolve an outstanding probe.
+    /// It counts only when it comes from the probe's target AND carries the
+    /// outstanding icmp seq, so a late reply from an earlier block cannot
+    /// leak into a new one.
+    fn probe_reply(&mut self, frame: &Frame, tick: u64, events: &mut Vec<SimEvent>) {
+        let src = frame.src_ip;
+        let seq = frame.icmp_echo.as_deref()
+            .and_then(|b| b.get(2..4))
+            .map(|b| u16::from_be_bytes([b[0], b[1]]));
+        match self.probe.as_mut() {
+            Some(Probe::Ping(p))
+                if matches!(p.waiting, Some((_, s)) if Some(s) == seq) && src == p.dst =>
+            {
+                let rtt = tick - p.waiting.take().map(|(t, _)| t).unwrap_or(tick);
+                p.ok += 1;
+                p.rtts.push(rtt);
+                p.next = tick + 1;
+                events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, "!".into()));
+            }
+            Some(Probe::Trace(t))
+                if matches!(t.waiting, Some((_, s)) if Some(s) == seq) && src == t.dst =>
+            {
+                let rtt = tick - t.waiting.take().map(|(v, _)| v).unwrap_or(tick);
+                let hop = t.hop;
+                t.done = true;
+                events.push(SimEvent::new(
+                    tick,
+                    self.id,
+                    None,
+                    EvKind::Trace,
+                    format!("{hop}  {}  {rtt} msec", ip_str(src)),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// A time-exceeded reached this device — resolve the current trace hop.
+    /// Only honored when it carries the outstanding probe's icmp seq.
+    fn probe_hop(&mut self, frame: &Frame, tick: u64, events: &mut Vec<SimEvent>) {
+        let src = frame.src_ip;
+        let seq = frame.icmp_echo.as_deref()
+            .and_then(|b| b.get(2..4))
+            .map(|b| u16::from_be_bytes([b[0], b[1]]));
+        if let Some(Probe::Trace(t)) = self.probe.as_mut() {
+            if matches!(t.waiting, Some((_, s)) if Some(s) == seq) {
+                let sent = t.waiting.take().map(|(v, _)| v).unwrap_or(tick);
+                let rtt = tick - sent;
+                let hop = t.hop;
+                t.hop += 1;
+                t.next = tick + 1;
+                events.push(SimEvent::new(
+                    tick,
+                    self.id,
+                    None,
+                    EvKind::Trace,
+                    format!("{hop}  {}  {rtt} msec", ip_str(src)),
+                ));
+            }
+        }
+    }
+
+    /// An ICMP unreachable reached this device while a probe waited.
+    pub fn probe_unreach(&mut self, tick: u64, events: &mut Vec<SimEvent>) {
+        match self.probe.as_mut() {
+            Some(Probe::Ping(p)) if p.waiting.is_some() => {
+                p.waiting = None;
+                p.next = tick + 1;
+                events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, "U".into()));
+            }
+            Some(Probe::Trace(t)) if t.waiting.is_some() => {
+                t.waiting = None;
+                let hop = t.hop;
+                t.hop += 1;
+                t.next = tick + 1;
+                events.push(SimEvent::new(
+                    tick,
+                    self.id,
+                    None,
+                    EvKind::Trace,
+                    format!("{hop}  *"),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// Per-tick probe driver — launches probes, times them out, closes blocks.
+    pub fn poll_probe(&mut self, tick: u64, events: &mut Vec<SimEvent>) {
+        if !self.powered {
+            self.probe = None;
+            return;
+        }
+        let launch = match self.probe.as_mut() {
+            Some(Probe::Ping(p)) => {
+                if let Some((sent, _)) = p.waiting {
+                    if tick.saturating_sub(sent) >= PROBE_TIMEOUT {
+                        p.waiting = None;
+                        p.next = tick + 1;
+                        events.push(SimEvent::new(
+                            tick,
+                            self.id,
+                            None,
+                            EvKind::Ping,
+                            ".".into(),
+                        ));
+                    }
+                }
+                if p.waiting.is_none() && tick >= p.next && p.sent < PING_PROBES {
+                    self.probe_seq = self.probe_seq.wrapping_add(1);
+                    let seq = self.probe_seq;
+                    p.sent += 1;
+                    p.waiting = Some((tick, seq));
+                    Some((p.dst, 64, seq))
+                } else {
+                    None
+                }
+            }
+            Some(Probe::Trace(t)) => {
+                if let Some((sent, _)) = t.waiting {
+                    if tick.saturating_sub(sent) >= PROBE_TIMEOUT {
+                        t.waiting = None;
+                        let hop = t.hop;
+                        t.hop += 1;
+                        t.next = tick + 1;
+                        events.push(SimEvent::new(
+                            tick,
+                            self.id,
+                            None,
+                            EvKind::Trace,
+                            format!("{hop}  *"),
+                        ));
+                    }
+                }
+                if t.waiting.is_none() && !t.done && tick >= t.next {
+                    if t.hop > TRACE_MAX_HOPS {
+                        t.done = true;
+                        None
+                    } else {
+                        self.probe_seq = self.probe_seq.wrapping_add(1);
+                        let seq = self.probe_seq;
+                        t.waiting = Some((tick, seq));
+                        Some((t.dst, t.hop, seq))
+                    }
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        if let Some((dst, ttl, seq)) = launch {
+            let mut echo = Frame::ip([0; 4], dst, ttl, Payload::IcmpEchoRequest);
+            echo.icmp_echo = Some(vec![0x70, 0x70, (seq >> 8) as u8, seq as u8]);
+            let ok = self.emit_ip(echo, tick);
+            if !ok {
+                match self.probe.as_mut() {
+                    Some(Probe::Ping(p)) => {
+                        p.waiting = None;
+                        p.next = tick + 1;
+                        events.push(SimEvent::new(
+                            tick,
+                            self.id,
+                            None,
+                            EvKind::Ping,
+                            "U".into(),
+                        ));
+                    }
+                    Some(Probe::Trace(t)) => {
+                        t.waiting = None;
+                        let hop = t.hop;
+                        t.hop += 1;
+                        t.next = tick + 1;
+                        events.push(SimEvent::new(
+                            tick,
+                            self.id,
+                            None,
+                            EvKind::Trace,
+                            format!("{hop}  *"),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(Probe::Ping(p)) = self.probe.as_ref() {
+            if p.sent >= PING_PROBES && p.waiting.is_none() {
+                let (ok, rtts) = (p.ok, p.rtts.clone());
+                self.probe = None;
+                let msg = if ok == 0 {
+                    format!("Success rate is 0 percent (0/{PING_PROBES})")
+                } else {
+                    let min = rtts.iter().min().copied().unwrap_or(0);
+                    let max = rtts.iter().max().copied().unwrap_or(0);
+                    let avg = rtts.iter().sum::<u64>() / rtts.len().max(1) as u64;
+                    format!(
+                        "Success rate is {} percent ({ok}/{PING_PROBES}), round-trip min/avg/max = {min}/{avg}/{max} ms",
+                        ok as u64 * 100 / PING_PROBES as u64,
+                    )
+                };
+                events.push(SimEvent::new(tick, self.id, None, EvKind::Ping, msg));
+            }
+        }
+        if let Some(Probe::Trace(t)) = self.probe.as_ref() {
+            if t.done {
+                self.probe = None;
             }
         }
     }

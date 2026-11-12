@@ -2,7 +2,7 @@
 
 use crate::device::Device;
 use crate::eth::{self};
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::Frame;
 use crate::ip_str;
 
@@ -14,13 +14,13 @@ pub fn start_dns(dev: &mut Device, name: &str, tick: u64, events: &mut Vec<SimEv
             events,
             tick,
             dev,
-            "dns",
+            EvKind::Syslog,
             "DNS failed — no server (DHCP, or `ip dns <addr>`)",
         );
         return false;
     };
     let Some(src) = dev.first_ip() else {
-        note(events, tick, dev, "dns", "DNS failed — no IPv4 address");
+        note(events, tick, dev, EvKind::Syslog, "DNS failed — no IPv4 address");
         return false;
     };
     let q = build_query(name);
@@ -44,9 +44,21 @@ pub fn start_dns(dev: &mut Device, name: &str, tick: u64, events: &mut Vec<SimEv
         .iter()
         .find_map(|p| p.ip.map(|_| p.mac))
         .unwrap_or(0);
-    let raw = eth::build_udp(mac, 0, src, dst, 64, dev.ip_id, sport, 53, &q);
+    let raw = eth::build_udp(
+        eth::IpSpec {
+            src_mac: mac,
+            dst_mac: 0,
+            src,
+            dst,
+            ttl: 64,
+            id: dev.ip_id,
+        },
+        sport,
+        53,
+        &q,
+    );
     dev.ip_id = dev.ip_id.wrapping_add(1);
-    dev.emit_ip(Frame::raw_ip(src, dst, 64, raw), tick, events);
+    dev.emit_ip(Frame::raw_ip(src, dst, 64, raw), tick);
     true
 }
 
@@ -78,12 +90,14 @@ pub(super) fn on_dns(
     let smac = dev.ports[port].mac;
     let src = dev.ports[port].ip.map(|(a, _)| a).unwrap_or(frame.dst_ip);
     let bytes = eth::build_udp(
-        smac,
-        frame.src_mac,
-        src,
-        frame.src_ip,
-        64,
-        dev.ip_id,
+        eth::IpSpec {
+            src_mac: smac,
+            dst_mac: frame.src_mac,
+            src,
+            dst: frame.src_ip,
+            ttl: 64,
+            id: dev.ip_id,
+        },
         53,
         v.sport,
         &answer,
@@ -97,7 +111,7 @@ pub(super) fn on_dns(
         events,
         tick,
         dev,
-        "dns",
+        EvKind::Syslog,
         &format!(
             "DNS {name} → {}",
             ip.map(ip_str).unwrap_or_else(|| "NXDOMAIN".into())

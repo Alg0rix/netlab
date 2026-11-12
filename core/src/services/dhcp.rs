@@ -1,12 +1,12 @@
 //! DHCP client, server and relay.
 
-use crate::device::{Device, DeviceKind};
+use crate::device::{Device, DeviceKind, LeaseEntry};
 use crate::eth::{self, view_ip};
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::{Frame, BROADCAST_MAC};
 use crate::{ip_str, mask_bits};
 
-use super::{next_id, note, udp_frame};
+use super::{next_id, note, udp_frame, UdpSpec};
 
 const DHCP_DISCOVER: u8 = 1;
 const DHCP_OFFER: u8 = 2;
@@ -42,7 +42,7 @@ pub(super) fn poll_client(dev: &mut Device, tick: u64, events: &mut Vec<SimEvent
                     events,
                     tick,
                     dev,
-                    "dhcp",
+                    EvKind::Dhcp,
                     "DHCP failed — no offer (is a server on this link?)",
                 );
             } else if c.state == DhcpState::Discover {
@@ -90,19 +90,21 @@ fn send_discover(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimE
     );
     let frame = udp_frame(
         dev,
-        mac,
-        BROADCAST_MAC,
-        [0; 4],
-        [255, 255, 255, 255],
-        68,
-        67,
+        UdpSpec {
+            smac: mac,
+            dmac: BROADCAST_MAC,
+            src: [0; 4],
+            dst: [255, 255, 255, 255],
+            sport: 68,
+            dport: 67,
+        },
         &pkt,
     );
     note(
         events,
         tick,
         dev,
-        "dhcp",
+        EvKind::Dhcp,
         &format!(
             "DHCP discover on {}",
             &format!("port {} ({})", port, dev.name)
@@ -128,19 +130,21 @@ fn send_request(dev: &mut Device, port: usize, tick: u64, events: &mut Vec<SimEv
     let pkt = dhcp_packet(1, c.xid, mac, [0; 4], [0; 4], [0; 4], &opts);
     let frame = udp_frame(
         dev,
-        mac,
-        BROADCAST_MAC,
-        [0; 4],
-        [255, 255, 255, 255],
-        68,
-        67,
+        UdpSpec {
+            smac: mac,
+            dmac: BROADCAST_MAC,
+            src: [0; 4],
+            dst: [255, 255, 255, 255],
+            sport: 68,
+            dport: 67,
+        },
         &pkt,
     );
     note(
         events,
         tick,
         dev,
-        "dhcp",
+        EvKind::Dhcp,
         &format!("DHCP request {}", ip_str(c.offer)),
     );
     dev.outbox.push((port, frame));
@@ -219,16 +223,28 @@ fn relay_to_helper(
     }
     pkt[3] = pkt[3].saturating_add(1);
     pkt[24..28].copy_from_slice(&src);
-    let raw = eth::build_udp(0, 0, src, helper, 64, dev.ip_id, 67, 67, &pkt);
+    let raw = eth::build_udp(
+        eth::IpSpec {
+            src_mac: 0,
+            dst_mac: 0,
+            src,
+            dst: helper,
+            ttl: 64,
+            id: dev.ip_id,
+        },
+        67,
+        67,
+        &pkt,
+    );
     dev.ip_id = dev.ip_id.wrapping_add(1);
     note(
         events,
         tick,
         dev,
-        "dhcp",
+        EvKind::Dhcp,
         &format!("DHCP relay {} -> {}", ip_str(src), ip_str(helper)),
     );
-    dev.emit_ip(Frame::raw_ip(src, helper, 64, raw), tick, events);
+    dev.emit_ip(Frame::raw_ip(src, helper, 64, raw), tick);
 }
 
 fn relay_to_client(
@@ -244,19 +260,21 @@ fn relay_to_client(
     let smac = dev.ports[port].mac;
     let frame = udp_frame(
         dev,
-        smac,
-        BROADCAST_MAC,
-        src,
-        [255, 255, 255, 255],
-        67,
-        68,
+        UdpSpec {
+            smac,
+            dmac: BROADCAST_MAC,
+            src,
+            dst: [255, 255, 255, 255],
+            sport: 67,
+            dport: 68,
+        },
         payload,
     );
     note(
         events,
         tick,
         dev,
-        "dhcp",
+        EvKind::Dhcp,
         &format!(
             "DHCP relay reply on {}",
             &format!("port {} ({})", port, dev.name)
@@ -303,10 +321,17 @@ fn serve_dhcp(
         return;
     };
     let mac = eth::mac_of(&msg.chaddr);
-    let ip = if let Some(ip) = dev.leases.get(&mac).copied() {
+    let ip = if let Some(ip) = dev.leases.get(&mac).map(|e| e.ip) {
         ip
     } else if let Some(ip) = alloc_lease(dev, my_ip, mask) {
-        dev.leases.insert(mac, ip);
+        dev.leases.insert(
+            mac,
+            LeaseEntry {
+                ip,
+                granted_tick: tick,
+                expires_tick: Some(tick + 3600),
+            },
+        );
         ip
     } else {
         return;
@@ -352,23 +377,37 @@ fn serve_dhcp(
         events,
         tick,
         dev,
-        "dhcp",
+        EvKind::Dhcp,
         &format!("DHCP {word} {} to {}", ip_str(ip), crate::mac_str(mac)),
     );
     if relayed {
-        let raw = eth::build_udp(0, 0, src, msg.giaddr, 64, dev.ip_id, 67, 67, &pkt);
+        let raw = eth::build_udp(
+            eth::IpSpec {
+                src_mac: 0,
+                dst_mac: 0,
+                src,
+                dst: msg.giaddr,
+                ttl: 64,
+                id: dev.ip_id,
+            },
+            67,
+            67,
+            &pkt,
+        );
         dev.ip_id = dev.ip_id.wrapping_add(1);
-        dev.emit_ip(Frame::raw_ip(src, msg.giaddr, 64, raw), tick, events);
+        dev.emit_ip(Frame::raw_ip(src, msg.giaddr, 64, raw), tick);
     } else {
         let smac = dev.ports[port].mac;
         let frame = udp_frame(
             dev,
-            smac,
-            BROADCAST_MAC,
-            my_ip,
-            [255, 255, 255, 255],
-            67,
-            68,
+            UdpSpec {
+                smac,
+                dmac: BROADCAST_MAC,
+                src: my_ip,
+                dst: [255, 255, 255, 255],
+                sport: 67,
+                dport: 68,
+            },
             &pkt,
         );
         dev.outbox.push((port, frame));
@@ -396,8 +435,9 @@ fn client_dhcp(dev: &mut Device, msg: &DhcpMsg, tick: u64, events: &mut Vec<SimE
         if port < dev.ports.len() {
             dev.ports[port].ip = Some((ip, mask));
         }
+        dev.sync_connected(tick);
         if gw != [0; 4] {
-            dev.set_default_route(gw, port);
+            dev.set_default_route(gw, port, tick);
         }
         if dns != [0; 4] {
             dev.resolver = Some(dns);
@@ -406,7 +446,7 @@ fn client_dhcp(dev: &mut Device, msg: &DhcpMsg, tick: u64, events: &mut Vec<SimE
             events,
             tick,
             dev,
-            "dhcp",
+            EvKind::Dhcp,
             &format!(
                 "DHCP {}/{} gw {} dns {}",
                 ip_str(ip),
@@ -438,10 +478,18 @@ fn alloc_lease(dev: &Device, my: [u8; 4], mask: [u8; 4]) -> Option<[u8; 4]> {
         }
         (s, e)
     };
+    let excluded = |ip: [u8; 4]| {
+        dev.dhcp_excluded.iter().any(|e| {
+            let hi = e.hi.unwrap_or(e.lo);
+            u32::from_be_bytes(ip) >= u32::from_be_bytes(e.lo)
+                && u32::from_be_bytes(ip) <= u32::from_be_bytes(hi)
+        })
+    };
     let mut ip = start;
     loop {
-        let used = dev.leases.values().any(|v| *v == ip)
-            || dev.ports.iter().any(|p| p.ip.map(|(a, _)| a) == Some(ip));
+        let used = dev.leases.values().any(|v| v.ip == ip)
+            || dev.ports.iter().any(|p| p.ip.map(|(a, _)| a) == Some(ip))
+            || excluded(ip);
         if !used {
             return Some(ip);
         }

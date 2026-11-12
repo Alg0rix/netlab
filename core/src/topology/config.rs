@@ -1,10 +1,25 @@
 //! Per-device configuration setters.
 
-use crate::device::{Ace, Acl, DeviceId, NatRole, Route, RouteProto};
+use crate::device::{Ace, Acl, DeviceId, DeviceKind, NatRole, Route, RouteProto};
 use crate::parse_ip;
 use crate::services::StaticNat;
 
 use super::Topology;
+
+/// One access-list entry as string fields — the flat labfile/wasm
+/// surface for `Topology::acl_add`. `proto` is 0 (any), 1, 6 or 17;
+/// `sport`/`dport` 0 means wildcard.
+pub struct AceArgs<'a> {
+    pub num: u16,
+    pub permit: bool,
+    pub proto: u8,
+    pub src: &'a str,
+    pub src_wild: &'a str,
+    pub dst: &'a str,
+    pub dst_wild: &'a str,
+    pub sport: u16,
+    pub dport: u16,
+}
 
 impl Topology {
     pub fn set_power(&mut self, id: DeviceId, on: bool) {
@@ -36,13 +51,25 @@ impl Topology {
         }
     }
 
+    /// `shutdown` / `no shutdown` — the kind-gated admin-state setter.
+    pub fn set_admin(&mut self, dev: DeviceId, port: usize, up: bool) -> bool {
+        let tick = self.tick;
+        let Some(d) = self.devices.get_mut(&dev) else {
+            return false;
+        };
+        crate::config::set_admin(d, port, up, tick, &mut self.events).is_ok()
+    }
+
     pub fn set_ip(&mut self, dev: DeviceId, port: usize, ip: &str, mask: &str) -> bool {
         let (Some(ip), Some(mask)) = (parse_ip(ip), parse_ip(mask)) else {
             return false;
         };
+        let tick = self.tick;
         if let Some(d) = self.devices.get_mut(&dev) {
             if let Some(p) = d.ports.get_mut(port) {
                 p.ip = Some((ip, mask));
+                p.method = crate::device::IpMethod::Manual;
+                d.sync_connected(tick);
                 return true;
             }
         }
@@ -54,6 +81,7 @@ impl Topology {
         let Some(gw_ip) = parse_ip(gw) else {
             return false;
         };
+        let tick = self.tick;
         if let Some(d) = self.devices.get_mut(&dev) {
             let out_port = d
                 .ports
@@ -65,7 +93,7 @@ impl Topology {
                     })
                 })
                 .unwrap_or(0);
-            d.set_default_route(gw_ip, out_port);
+            d.set_default_route(gw_ip, out_port, tick);
             return true;
         }
         false
@@ -84,6 +112,7 @@ impl Topology {
         else {
             return false;
         };
+        let tick = self.tick;
         if let Some(d) = self.devices.get_mut(&dev) {
             d.routes.push(Route {
                 prefix,
@@ -92,6 +121,9 @@ impl Topology {
                 out_port,
                 connected: false,
                 proto: RouteProto::Static,
+                ad: 1,
+                metric: 0,
+                learned_tick: tick,
             });
             return true;
         }
@@ -185,6 +217,7 @@ impl Topology {
             d.static_nat.push(StaticNat {
                 proto: 0,
                 inside_ip: ip,
+                inside_global: None,
                 inside_port: 0,
                 outside_port: 0,
             });
@@ -194,6 +227,7 @@ impl Topology {
             d.static_nat.push(StaticNat {
                 proto,
                 inside_ip: ip,
+                inside_global: None,
                 inside_port,
                 outside_port,
             });
@@ -237,6 +271,9 @@ impl Topology {
         let Some(d) = self.devices.get_mut(&dev) else {
             return false;
         };
+        if d.kind != DeviceKind::Switch {
+            return false;
+        }
         let Some(p) = d.ports.get_mut(port) else {
             return false;
         };
@@ -288,24 +325,12 @@ impl Topology {
         }
     }
 
-    pub fn acl_add(
-        &mut self,
-        dev: DeviceId,
-        num: u16,
-        permit: bool,
-        proto: u8,
-        src: &str,
-        src_wild: &str,
-        dst: &str,
-        dst_wild: &str,
-        sport: u16,
-        dport: u16,
-    ) -> bool {
+    pub fn acl_add(&mut self, dev: DeviceId, spec: AceArgs<'_>) -> bool {
         let (Some(src), Some(src_wild), Some(dst), Some(dst_wild)) = (
-            parse_ip(src),
-            parse_ip(src_wild),
-            parse_ip(dst),
-            parse_ip(dst_wild),
+            parse_ip(spec.src),
+            parse_ip(spec.src_wild),
+            parse_ip(spec.dst),
+            parse_ip(spec.dst_wild),
         ) else {
             return false;
         };
@@ -313,20 +338,20 @@ impl Topology {
             return false;
         };
         let ace = Ace {
-            permit,
-            proto,
+            permit: spec.permit,
+            proto: spec.proto,
             src,
             src_wild,
             dst,
             dst_wild,
-            sport: (sport != 0).then_some(sport),
-            dport: (dport != 0).then_some(dport),
+            sport: (spec.sport != 0).then_some(spec.sport),
+            dport: (spec.dport != 0).then_some(spec.dport),
         };
-        if let Some(a) = d.acls.iter_mut().find(|a| a.num == num) {
+        if let Some(a) = d.acls.iter_mut().find(|a| a.num == spec.num) {
             a.entries.push(ace);
         } else {
             d.acls.push(Acl {
-                num,
+                num: spec.num,
                 entries: vec![ace],
             });
         }
@@ -358,7 +383,11 @@ impl Topology {
         let Some(d) = self.devices.get_mut(&dev) else {
             return false;
         };
-        d.ospf.on = true;
+        if !d.ospf.on {
+            d.ospf.on = true;
+            d.ospf.pid = 1;
+            d.ospf.router_id = crate::ospf::derive_router_id(d);
+        }
         d.ospf
             .nets
             .retain(|n| !(n.prefix == prefix && n.wild == wild));
@@ -379,8 +408,10 @@ impl Topology {
             d.ospf.if_area.resize(d.ports.len(), None);
         }
         d.ospf.if_area[port] = area;
-        if area.is_some() {
+        if area.is_some() && !d.ospf.on {
             d.ospf.on = true;
+            d.ospf.pid = 1;
+            d.ospf.router_id = crate::ospf::derive_router_id(d);
         }
         true
     }

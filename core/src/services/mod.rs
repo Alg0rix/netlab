@@ -14,11 +14,11 @@ pub use nat::{NatEnt, StaticNat};
 pub(crate) use dhcp::{dhcp_state, start_dhcp};
 pub(crate) use dns::start_dns;
 pub(crate) use flows::{start_tcp, start_udp};
-pub(crate) use nat::{nat_egress, nat_ingress};
+pub(crate) use nat::{nat_egress, nat_global, nat_ingress};
 
 use crate::device::{Device, DeviceKind};
 use crate::eth::{self, view_ip};
-use crate::events::SimEvent;
+use crate::events::{EvKind, SimEvent};
 use crate::frame::{Frame, Payload};
 
 /// Per-tick service work: DHCP retransmits, flow deadlines.
@@ -63,27 +63,42 @@ pub fn local_l4(
         return true;
     }
     if v.proto == 1 && v.icmp_type == 3 {
+        dev.probe_unreach(tick, events);
         flows::on_unreach(dev, frame, tick, events);
         return true;
     }
     false
 }
 
-pub(super) fn udp_frame(
-    dev: &mut Device,
-    smac: u64,
-    dmac: u64,
-    src: [u8; 4],
-    dst: [u8; 4],
-    sport: u16,
-    dport: u16,
-    payload: &[u8],
-) -> Frame {
-    let raw = eth::build_udp(smac, dmac, src, dst, 64, dev.ip_id, sport, dport, payload);
+/// The caller-owned fields of an outbound UDP datagram — `udp_frame`
+/// fills ttl and the ip id slot from the device itself.
+pub(super) struct UdpSpec {
+    pub smac: u64,
+    pub dmac: u64,
+    pub src: [u8; 4],
+    pub dst: [u8; 4],
+    pub sport: u16,
+    pub dport: u16,
+}
+
+pub(super) fn udp_frame(dev: &mut Device, u: UdpSpec, payload: &[u8]) -> Frame {
+    let raw = eth::build_udp(
+        eth::IpSpec {
+            src_mac: u.smac,
+            dst_mac: u.dmac,
+            src: u.src,
+            dst: u.dst,
+            ttl: 64,
+            id: dev.ip_id,
+        },
+        u.sport,
+        u.dport,
+        payload,
+    );
     dev.ip_id = dev.ip_id.wrapping_add(1);
-    let mut f = Frame::raw_ip(src, dst, 64, raw);
-    f.src_mac = smac;
-    f.dst_mac = dmac;
+    let mut f = Frame::raw_ip(u.src, u.dst, 64, raw);
+    f.src_mac = u.smac;
+    f.dst_mac = u.dmac;
     f
 }
 
@@ -108,7 +123,7 @@ pub(crate) fn l4_tuple(frame: &Frame) -> (u8, u16, u16, u16) {
 }
 
 pub(super) fn alloc_port(dev: &mut Device) -> u16 {
-    let p = 40_000 + (dev.ip_id % 20_000) as u16;
+    let p = 40_000 + (dev.ip_id % 20_000);
     dev.ip_id = dev.ip_id.wrapping_add(1);
     p
 }
@@ -122,12 +137,12 @@ pub(crate) fn note(
     events: &mut Vec<SimEvent>,
     tick: u64,
     dev: &Device,
-    kind: &'static str,
+    kind: EvKind,
     msg: &str,
 ) {
     events.push(SimEvent::new(
         tick,
-        Some(dev.id),
+        dev.id,
         None,
         kind,
         format!("{}: {msg}", dev.name),

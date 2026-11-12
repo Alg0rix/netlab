@@ -1,4 +1,6 @@
-mod device;
+pub mod cli;
+pub mod config;
+pub mod device;
 mod eth;
 mod events;
 mod frame;
@@ -7,10 +9,11 @@ mod ospf;
 mod services;
 mod topology;
 
-pub use device::{DeviceId, DeviceKind};
+pub use cli::{Cli, CliResult, Intent, Op};
+pub use device::{Device, DeviceId, DeviceKind};
 pub use events::SimEvent;
 pub use link::LinkId;
-pub use topology::{Capture, Snapshot, Topology};
+pub use topology::{AceArgs, Capture, Snapshot, Topology};
 
 pub(crate) fn ip_str(ip: [u8; 4]) -> String {
     format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])

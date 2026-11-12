@@ -125,9 +125,9 @@ TODO in order:
    - `web/util.js`: $,$$,esc,h,clamp,b64,unb64,isTyping,maskLen,lenMask,PROTO_NAME,TICK_MS; rewire imports in main/cli/capture/labyaml/templates.
    - Bug fixes: missing `--p-ospf` CSS var (style.css + capture.js protoClass); ifName c7200 PA-8E off-by-one (icons.js vs ios.js slot map); cli.js `WORDS` missing reload/no/in/out/any/all/on/off/set/pcname/nc + `i<4` expansion limit; labyaml `+l.delay||4`→`??4` + emit/parse missing fields (uid,image,portCount,vm,dns,notes,shapes,view); DEMO()→build from branch-office template.
    - Surplus: capShown, chooseImage alias, roundRect dup, openMenu onClose, readColors unused keys, ios.js terminate()/number coercion, vm.js terminate().
-   - main.js modularize via `state.js` `export const S={...}` + split per audit table (17 files). BIG — consider delegating to a subagent with the audit's decomposition table.
+   - main.js modularize via `state.js` `export const S={...}` + split per audit table (17 files). BIG — follow the audit's decomposition table.
 8. Comments pass: strip restating comments in touched code; keep wire-format/external-knowledge ones.
-9. Final: `node --check` all web/*.js; subagent re-sweep.
+9. Final: `node --check` all web/*.js; final re-sweep.
 
 ## CHECKPOINT 2 — RUST DONE, all tests green
 

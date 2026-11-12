@@ -3,23 +3,37 @@ use serde::Serialize;
 use crate::DeviceId;
 use crate::LinkId;
 
+/// Frozen event-kind vocabulary — the only channel labels the adapter sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EvKind {
+    /// C1/C2 interface state pairs.
+    Link,
+    /// C3–C5 ping probe glyphs, headers and summaries.
+    Ping,
+    /// C6–C8 traceroute header and hop rows.
+    Trace,
+    /// C9 DHCP assignment/renewal notes.
+    Dhcp,
+    /// C10 %-style notices (OSPF ADJCHG, service notes).
+    Syslog,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SimEvent {
     pub tick: u64,
-    pub device: Option<DeviceId>,
+    pub device: DeviceId,
     pub link: Option<LinkId>,
-    /// "tx" | "learn" | "flood" | "forward" | "arp_req" | "arp_rep"
-    /// | "echo_req" | "echo_rep" | "deliver" | "drop"
-    pub kind: &'static str,
+    pub kind: EvKind,
     pub msg: String,
 }
 
 impl SimEvent {
     pub fn new(
         tick: u64,
-        device: Option<DeviceId>,
+        device: DeviceId,
         link: Option<LinkId>,
-        kind: &'static str,
+        kind: EvKind,
         msg: String,
     ) -> Self {
         Self {

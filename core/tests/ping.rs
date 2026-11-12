@@ -21,24 +21,40 @@ fn ping_through_switch_completes() {
     }
     let msgs: Vec<String> = t.events.iter().map(|e| e.msg.clone()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("reply from 10.0.0.2")),
-        "no echo reply delivered.\n{}",
+        msgs.iter().any(|m| m == "!"),
+        "no probe succeeded.\n{}",
         msgs.join("\n")
     );
-    let _ = pc2;
+    // the reply path ARP-resolved the initiator on the far host
+    let learned = t
+        .snapshot()
+        .devices
+        .into_iter()
+        .find(|d| d.id == pc2)
+        .unwrap()
+        .arp_table
+        .iter()
+        .any(|a| a.ip == "10.0.0.1");
+    assert!(learned, "the echo never reached PC2");
 }
 
 #[test]
 fn arp_resolution_happens_before_icmp() {
     let (mut t, pc1, _pc2) = host_switch_host();
     t.ping(pc1, "10.0.0.2");
-    t.step();
-    let msgs: Vec<&str> = t.events.iter().map(|e| e.msg.as_str()).collect();
-    assert!(
-        msgs.iter().any(|m| m.contains("ARP who-has 10.0.0.2")),
-        "{}",
-        msgs.join("\n")
-    );
+    for _ in 0..30 {
+        t.step();
+    }
+    let learned = t
+        .snapshot()
+        .devices
+        .into_iter()
+        .find(|d| d.id == pc1)
+        .unwrap()
+        .arp_table
+        .iter()
+        .any(|a| a.ip == "10.0.0.2");
+    assert!(learned, "the peer's address was never ARP-resolved");
 }
 
 #[test]
@@ -53,6 +69,8 @@ fn ping_routes_across_router() {
     t.set_gateway(pc1, "10.0.0.254");
     t.set_ip(r1, 0, "10.0.0.254", "255.255.255.0");
     t.set_ip(r1, 1, "192.168.0.254", "255.255.255.0");
+    t.set_admin(r1, 0, true);
+    t.set_admin(r1, 1, true);
     t.set_ip(pc2, 0, "192.168.0.1", "255.255.255.0");
     t.set_gateway(pc2, "192.168.0.254");
 
@@ -62,7 +80,7 @@ fn ping_routes_across_router() {
     }
     let msgs: Vec<String> = t.events.iter().map(|e| e.msg.clone()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("reply from 192.168.0.1")),
+        msgs.iter().any(|m| m == "!"),
         "routed ping failed.\n{}",
         msgs.join("\n")
     );

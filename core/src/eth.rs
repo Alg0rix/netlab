@@ -497,109 +497,81 @@ pub(crate) fn icmp_packet(ty: u8, code: u8, body: &[u8]) -> Vec<u8> {
     icmp
 }
 
-/// Ethernet/IPv4 frame carrying an ICMP message.
-pub(crate) fn build_icmp(
-    src_mac: u64,
-    dst_mac: u64,
-    src: [u8; 4],
-    dst: [u8; 4],
-    ttl: u8,
-    id: u16,
-    ty: u8,
-    code: u8,
-    body: &[u8],
-) -> Vec<u8> {
-    build_ip(
-        src_mac,
-        dst_mac,
-        src,
-        dst,
-        ttl,
-        1,
-        id,
-        &icmp_packet(ty, code, body),
-    )
+/// The header slots every wire builder shares: the Ethernet pair, the
+/// IPv4 addresses, ttl and the identification field.
+#[derive(Clone, Copy)]
+pub(crate) struct IpSpec {
+    pub src_mac: u64,
+    pub dst_mac: u64,
+    pub src: [u8; 4],
+    pub dst: [u8; 4],
+    pub ttl: u8,
+    pub id: u16,
 }
 
-pub(crate) fn build_ip(
-    src_mac: u64,
-    dst_mac: u64,
-    src: [u8; 4],
-    dst: [u8; 4],
-    ttl: u8,
-    proto: u8,
-    id: u16,
-    payload: &[u8],
-) -> Vec<u8> {
+/// TCP header fields beyond `IpSpec` — the port pair and the
+/// sequence/acknowledgement/flags word.
+#[derive(Clone, Copy)]
+pub(crate) struct TcpHdr {
+    pub sport: u16,
+    pub dport: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub flags: u8,
+}
+
+/// Ethernet/IPv4 frame carrying an ICMP message.
+pub(crate) fn build_icmp(s: IpSpec, ty: u8, code: u8, body: &[u8]) -> Vec<u8> {
+    build_ip(s, 1, &icmp_packet(ty, code, body))
+}
+
+pub(crate) fn build_ip(s: IpSpec, proto: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(14 + 20 + payload.len());
-    out.extend_from_slice(&mac_bytes(dst_mac));
-    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&mac_bytes(s.dst_mac));
+    out.extend_from_slice(&mac_bytes(s.src_mac));
     out.extend_from_slice(&0x0800u16.to_be_bytes());
-    push_ipv4(&mut out, ttl, proto, id, src, dst, payload.len());
+    push_ipv4(&mut out, s.ttl, proto, s.id, s.src, s.dst, payload.len());
     out.extend_from_slice(payload);
     out
 }
 
-pub(crate) fn build_udp(
-    src_mac: u64,
-    dst_mac: u64,
-    src: [u8; 4],
-    dst: [u8; 4],
-    ttl: u8,
-    id: u16,
-    sport: u16,
-    dport: u16,
-    payload: &[u8],
-) -> Vec<u8> {
+pub(crate) fn build_udp(s: IpSpec, sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(14 + 20 + 8 + payload.len());
-    out.extend_from_slice(&mac_bytes(dst_mac));
-    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&mac_bytes(s.dst_mac));
+    out.extend_from_slice(&mac_bytes(s.src_mac));
     out.extend_from_slice(&0x0800u16.to_be_bytes());
-    push_ipv4(&mut out, ttl, 17, id, src, dst, 8 + payload.len());
+    push_ipv4(&mut out, s.ttl, 17, s.id, s.src, s.dst, 8 + payload.len());
     out.extend_from_slice(&sport.to_be_bytes());
     out.extend_from_slice(&dport.to_be_bytes());
     out.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
     out.extend_from_slice(&[0, 0]);
     out.extend_from_slice(payload);
     let l4 = 14 + 20;
-    let sum = pseudo_sum(src, dst, 17, 8 + payload.len()) + sum_words(&out[l4..]);
+    let sum = pseudo_sum(s.src, s.dst, 17, 8 + payload.len()) + sum_words(&out[l4..]);
     let c = udp_sum(finish(sum));
     out[l4 + 6] = (c >> 8) as u8;
     out[l4 + 7] = c as u8;
     out
 }
 
-pub(crate) fn build_tcp(
-    src_mac: u64,
-    dst_mac: u64,
-    src: [u8; 4],
-    dst: [u8; 4],
-    ttl: u8,
-    id: u16,
-    sport: u16,
-    dport: u16,
-    seq: u32,
-    ack: u32,
-    flags: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+pub(crate) fn build_tcp(s: IpSpec, h: TcpHdr, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(14 + 20 + 20 + payload.len());
-    out.extend_from_slice(&mac_bytes(dst_mac));
-    out.extend_from_slice(&mac_bytes(src_mac));
+    out.extend_from_slice(&mac_bytes(s.dst_mac));
+    out.extend_from_slice(&mac_bytes(s.src_mac));
     out.extend_from_slice(&0x0800u16.to_be_bytes());
-    push_ipv4(&mut out, ttl, 6, id, src, dst, 20 + payload.len());
-    out.extend_from_slice(&sport.to_be_bytes());
-    out.extend_from_slice(&dport.to_be_bytes());
-    out.extend_from_slice(&seq.to_be_bytes());
-    out.extend_from_slice(&ack.to_be_bytes());
+    push_ipv4(&mut out, s.ttl, 6, s.id, s.src, s.dst, 20 + payload.len());
+    out.extend_from_slice(&h.sport.to_be_bytes());
+    out.extend_from_slice(&h.dport.to_be_bytes());
+    out.extend_from_slice(&h.seq.to_be_bytes());
+    out.extend_from_slice(&h.ack.to_be_bytes());
     out.push(0x50); // data offset 5
-    out.push(flags);
+    out.push(h.flags);
     out.extend_from_slice(&65535u16.to_be_bytes());
     out.extend_from_slice(&[0, 0]); // checksum
     out.extend_from_slice(&0u16.to_be_bytes()); // urgent
     out.extend_from_slice(payload);
     let l4 = 34;
-    let sum = pseudo_sum(src, dst, 6, 20 + payload.len()) + sum_words(&out[l4..]);
+    let sum = pseudo_sum(s.src, s.dst, 6, 20 + payload.len()) + sum_words(&out[l4..]);
     let c = finish(sum);
     out[l4 + 16] = (c >> 8) as u8;
     out[l4 + 17] = c as u8;
