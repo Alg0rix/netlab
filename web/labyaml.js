@@ -193,7 +193,7 @@ const decodePort = (p, kind) => {
   if (p.in_acl != null) port.in_acl = u(p.in_acl);
   if (p.out_acl != null) port.out_acl = u(p.out_acl);
   if (p.ospf_area != null && p.ospf_area !== '') port.ospf_area = u(p.ospf_area);
-  port.admin_up = boolOf(p.admin_up ?? p.adminUp, kind !== 'router');
+  port.admin_up = boolOf(p.admin_up ?? p.adminUp, true);
   port.method = METHODS.includes(p.method) ? p.method : 'none';
   port.stats = {};
   for (const k of STATS_KEYS) port.stats[k] = u(st[k] ?? p[k]);
@@ -382,7 +382,7 @@ const encodePort = (p, kind) => {
   if (d.allowed != null) o.allowed = d.allowed;
   if (d.helper != null) o.helper = d.helper;
   if (d.ospf_area != null) o.ospf_area = d.ospf_area;
-  if (d.admin_up !== (kind !== 'router')) o.admin_up = d.admin_up;
+  if (d.admin_up === false) o.admin_up = false;
   if (d.method !== 'none') o.method = d.method;
   const st = {};
   for (const k of STATS_KEYS) if (d.stats[k] !== 0) st[k] = d.stats[k];

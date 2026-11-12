@@ -75,7 +75,7 @@ Leave `uid` as it is. It is an internal storage key.
 1. `meta.startupBoot` is `true`.
 2. `meta.startup` is text.
 
-The script runs through the same path as a paste, so the rules in [Scripts and paste](cli.md#scripts-and-paste) apply. Router interfaces start administratively down. Add `no shutdown` for each interface the script uses.
+The script runs through the same path as a paste, so the rules in [Scripts and paste](cli.md#scripts-and-paste) apply. Interfaces on a router that the script creates or changes still start down — the engine keeps new router interfaces shut. Add `no shutdown` for each interface the script uses.
 
 ## Ports
 
@@ -92,7 +92,7 @@ Each row in `ports` describes one port, in port order. `- ~` and `- {}` both lea
 | `helper` | No relay | DHCP relay server address. |
 | `in_acl`, `out_acl` | No access list | Access-list number. |
 | `ospf_area` | OSPF off on this port | |
-| `admin_up` | Router: `false`. Switch and host: `true` | `false` shuts the port down. |
+| `admin_up` | `true` | `false` shuts the port down. The document default is up on every kind; only interfaces a router adds at runtime start shut. |
 | `method` | `none` | `none`, `manual`, or `dhcp`. Any other word becomes `none`. |
 | `stats.rx`, `stats.tx`, `stats.rx_err`, `stats.tx_err`, `stats.drops`, `stats.cleared_tick` | 0 | Counters that `show interfaces` prints. A bad number becomes 0. |
 

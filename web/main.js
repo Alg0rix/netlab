@@ -997,16 +997,20 @@ function draw(now) {
       ctx.strokeStyle = C.accent; ctx.globalAlpha = isSel ? .28 : .14; ctx.lineWidth = 8;
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.globalAlpha = 1;
     }
-    ctx.strokeStyle = !l.up ? C.bad : isSel ? C.accent : C.link;
+    // effective per-end state: carrier × powered × interface admin. A shut
+    // port still has carrier — draw the cable amber so a dead path reads
+    // as blocked, not as working.
+    const aOk = l.up && running(l.a) && a.ports?.[l.a_port]?.admin_up !== false;
+    const bOk = l.up && running(l.b) && b.ports?.[l.b_port]?.admin_up !== false;
+    ctx.strokeStyle = !l.up ? C.bad : (aOk && bOk) ? (isSel ? C.accent : C.link) : C.warn;
     ctx.lineWidth = isSel ? 2.2 : 1.6;
     ctx.setLineDash(l.up ? [] : [6, 5]);
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
     ctx.setLineDash([]);
 
     const len = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / len, uy = (by - ay) / len;
-    // endpoint status dots — green when the cable is up and both ends run (GNS3 semantics)
-    const ok = l.up && running(l.a) && running(l.b);
-    for (const [x, y, s] of [[ax, ay, 1], [bx, by, -1]]) {
+    // endpoint status dots — green only on an end that can really pass traffic
+    for (const [x, y, s, ok] of [[ax, ay, 1, aOk], [bx, by, -1, bOk]]) {
       const off = Math.min(32, len / 2 - 4);
       ctx.fillStyle = ok ? C.ok : C.bad;
       ctx.beginPath(); ctx.arc(x + ux * off * s, y + uy * off * s, 3.2, 0, 7); ctx.fill();
@@ -2689,7 +2693,8 @@ function outPortFor(d, ip) {
 function linkInspector(lid) {
   const l = linkById.get(lid);
   const a = byId.get(l.a), b = byId.get(l.b);
-  const ok = l.up && nodeState(l.a) === 'running' && nodeState(l.b) === 'running';
+  const aUp = a.ports?.[l.a_port]?.admin_up !== false, bUp = b.ports?.[l.b_port]?.admin_up !== false;
+  const ok = l.up && nodeState(l.a) === 'running' && nodeState(l.b) === 'running' && aUp && bUp;
   const root = h(`<div>
     <div class="cable-head"><svg viewBox="0 0 48 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 22c10 0 10-16 21-16s11 16 21 16"/><circle cx="3" cy="22" r="2.5" fill="currentColor"/><circle cx="45" cy="22" r="2.5" fill="currentColor"/></svg>
       <div><b style="font-size:15px">Ethernet link</b><div class="muted" style="font-size:12px">${esc(l.speed || '1G')} · ${l.delay} ms${l.jitter ? ` ±${l.jitter}` : ''}${l.loss ? ` · ${l.loss}% loss` : ''}${l.mtu ? ` · MTU ${l.mtu}` : ''}</div></div></div>
@@ -2701,6 +2706,7 @@ function linkInspector(lid) {
     <div class="sect"><dl class="kv">
       <dt>Cable</dt><dd>${l.up ? '<span class="pill ok"><span class="dot running"></span>Plugged in</span>' : '<span class="pill bad"><span class="dot stopped"></span>Unplugged</span>'}</dd>
       <dt>Link state</dt><dd>${ok ? '<span class="pill ok"><span class="dot running"></span>Up</span>' : '<span class="pill bad"><span class="dot stopped"></span>Down</span>'}</dd>
+      ${l.up && !(aUp && bUp) ? `<dt>Blocked</dt><dd><span class="pill warn">${[!aUp && `${a.name} ${ifName(l.a, l.a_port)}`, !bUp && `${b.name} ${ifName(l.b, l.b_port)}`].filter(Boolean).join(' · ')} admin down</span></dd>` : ''}
       <dt>In flight</dt><dd>${l.frames.length} frame${l.frames.length === 1 ? '' : 's'}</dd>
       <dt>Capture</dt><dd>${l.capture ? `<span class="pill bad"><span class="dot stopped"></span>Recording · ${caps.get(lid)?.packets.length ?? 0}</span>` : 'off'}</dd>
     </dl></div>
